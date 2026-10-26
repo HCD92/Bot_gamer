@@ -44,13 +44,17 @@ def main() -> int:
 
     commands, telemetry = queue.Queue(), _queue()
     frames, observations, renders, status = _queue(), _queue(), _queue(), _queue()
-    capture_config = CaptureConfig(**config.get("capture", {}))
+    capture_data = dict(config.get("capture", {}))
+    display_index = config.get("display", {}).get("monitor_index")
+    if display_index is not None:
+        capture_data["monitor"] = int(display_index)
+    capture_config = CaptureConfig(**capture_data)
     vision_data = config.get("vision", {})
     template_dir = Path(vision_data.get("template_dir", "assets/templates"))
     if not template_dir.is_absolute():
         vision_data["template_dir"] = str(config_path.parent / template_dir)
     vision_config = VisionConfig.from_dict(vision_data)
-    agent_config = AgentConfig.from_dict(config.get("agent", {}))
+    agent_config = AgentConfig.from_dict(config.get("agent", {}), str(config_path))
     capture_worker = CaptureWorker(capture_config, frames, status)
     vision_worker = VisionWorker(
         vision_config,
@@ -68,7 +72,10 @@ def main() -> int:
         telemetry,
         initial_priority=config.get("agent", {}).get("initial_priority", "Build"),
     )
-    panel = ControlPanel(commands, telemetry, renders, status, halt_input=controller.halt)
+    panel = ControlPanel(commands, telemetry, renders, status, halt_input=controller.halt,
+        capture_worker=capture_worker,
+        config_path=config_path,
+    )
 
     hotkey_module = None
     hotkey_handles = []

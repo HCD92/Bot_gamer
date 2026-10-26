@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import queue
 import threading
 import time
@@ -39,9 +40,10 @@ class AgentConfig:
     max_deliveries: int = 0
     prompt_clear_seconds: float = 1.5
     close_menu_with_escape: bool = False
+    config_path: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AgentConfig":
+    def from_dict(cls, data: dict[str, Any], config_path: str | None = None) -> "AgentConfig":
         return cls(
             timeouts={key: float(value) for key, value in data.get("timeouts", {}).items()},
             signals=data.get("signals", {}),
@@ -55,6 +57,7 @@ class AgentConfig:
             max_deliveries=int(data.get("max_deliveries", 0)),
             prompt_clear_seconds=float(data.get("prompt_clear_seconds", 1.5)),
             close_menu_with_escape=bool(data.get("close_menu_with_escape", False)),
+            config_path=config_path,
         )
 
 
@@ -85,6 +88,7 @@ class LogisticsAgent(threading.Thread):
         self._delivery_target = config.max_deliveries
         self._action = "Standby"
         self._route_index = 0
+        self._routes = {k: list(v) for k, v in config.route_segments.items()}
         self._recovery_attempts = 0
         self._unload_started = False
         self._prompt_seen = False
@@ -253,14 +257,37 @@ class LogisticsAgent(threading.Thread):
         if not self._detected("friendly_fob"):
             self._fail_to_recovery("Friendly FOB not detected on map")
             return
-        if not self.config.route_segments.get("to_fob"):
-            self._fail_to_recovery("Configure route_segments.to_fob before driving")
+        self._begin_route(State.DRIVE_TO_FOB)
+
+    def _reload_routes(self) -> None:
+        """Refresh route segments from config.json so recorded routes apply immediately."""
+        path = self.config.config_path
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as handle:
+                routes = json.load(handle).get("agent", {}).get("route_segments", {})
+        except (OSError, ValueError):
+            return
+        self._routes = {
+            name: routes.get(name) or [] for name in ("to_fob", "to_hq")
+        }
+
+    def _routes_have(self, route_name: str) -> bool:
+        self._reload_routes()
+        return bool(self._routes.get(route_name))
+
+    def _begin_route(self, state: State) -> None:
+        route_name = "to_fob" if state == State.DRIVE_TO_FOB else "to_hq"
+        self._reload_routes()
+        if not self._routes.get(route_name):
+            self._fail_to_recovery(f"Configure route_segments.{route_name}")
             return
         self._route_index = 0
-        self._set_state(State.DRIVE_TO_FOB)
+        self._set_state(state)
 
     def _drive(self, route_name: str, next_state: State) -> None:
-        segments = self.config.route_segments.get(route_name, [])
+        segments = self._routes.get(route_name, [])
         if not segments:
             self._fail_to_recovery(f"Configure route_segments.{route_name}")
             return
@@ -329,8 +356,8 @@ class LogisticsAgent(threading.Thread):
             if self._delivery_target > 0 and self._deliveries >= self._delivery_target:
                 self.input.halt()
                 self._set_state(State.IDLE, "Delivery target reached")
-            elif self.config.route_segments.get("to_hq"):
-                self._set_state(State.RETURN_HQ)
+            elif self._routes_have("to_hq"):
+                self._begin_route(State.RETURN_HQ)
             else:
                 self._set_state(State.BUY_PALLET)
         elif self._expired():
@@ -355,8 +382,8 @@ class LogisticsAgent(threading.Thread):
             self._route_index = 0
             if self._last_observation and self._detected("delivery_zone"):
                 self._set_state(State.DELIVER)
-            elif self.config.route_segments.get("to_fob"):
-                self._set_state(State.DRIVE_TO_FOB)
+            elif self._routes_have("to_fob"):
+                self._begin_route(State.DRIVE_TO_FOB)
             else:
                 self.input.halt()
                 self._set_state(State.IDLE, "No calibrated route; stopped")

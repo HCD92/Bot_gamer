@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import queue
+from pathlib import Path
 
 import cv2
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
+from capture import get_available_monitors
+from recorder import RouteRecorder, assign_route, update_config
 from PyQt6.QtWidgets import (
     QComboBox,
+    QGroupBox,
+    QMessageBox,
+    QPlainTextEdit,
+    QTabWidget,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -28,6 +36,8 @@ class ControlPanel(QMainWindow):
         render_queue: queue.Queue,
         status_queue: queue.Queue,
         halt_input=None,
+        capture_worker=None,
+        config_path=None,
     ):
         super().__init__()
         self.commands = commands
@@ -35,6 +45,10 @@ class ControlPanel(QMainWindow):
         self.render_queue = render_queue
         self.status_queue = status_queue
         self.halt_input = halt_input
+        self.capture_worker = capture_worker
+        self.config_path = Path(config_path) if config_path else None
+        self.recorder = RouteRecorder()
+        self._hooks_ok = self.recorder.install_hooks()
         self._paused = False
         self.setWindowTitle("Wardogs Logistics Control")
         self.resize(1100, 760)
@@ -80,6 +94,15 @@ class ControlPanel(QMainWindow):
         toolbar.addWidget(self.stop_button)
         layout.addLayout(toolbar)
 
+        display_box = QGroupBox("Display Settings")
+        display_layout = QHBoxLayout(display_box)
+        display_layout.addWidget(QLabel("Capture display"))
+        self.monitor_combo = QComboBox()
+        self._populate_monitors()
+        self.monitor_combo.currentIndexChanged.connect(self._monitor_changed)
+        display_layout.addWidget(self.monitor_combo, 1)
+        layout.addWidget(display_box)
+
         self.preview = QLabel("Waiting for capture")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumSize(800, 480)
@@ -112,7 +135,84 @@ class ControlPanel(QMainWindow):
             grid.addWidget(QLabel(title), index // 3, (index % 3) * 2)
             grid.addWidget(value, index // 3, (index % 3) * 2 + 1)
         layout.addLayout(grid)
-        self.setCentralWidget(central)
+        tabs = QTabWidget()
+        tabs.addTab(central, "Control")
+        tabs.addTab(self._build_recorder_tab(), "Route Recorder")
+        self.setCentralWidget(tabs)
+
+    def _populate_monitors(self) -> None:
+        monitors = get_available_monitors()
+        current = self.capture_worker.monitor if self.capture_worker else 1
+        self.monitor_combo.blockSignals(True)
+        self.monitor_combo.clear()
+        for monitor in monitors:
+            self.monitor_combo.addItem(monitor["label"], monitor["index"])
+        position = self.monitor_combo.findData(current)
+        if position >= 0:
+            self.monitor_combo.setCurrentIndex(position)
+        self.monitor_combo.setEnabled(bool(monitors))
+        self.monitor_combo.blockSignals(False)
+
+    def _monitor_changed(self, _index: int) -> None:
+        monitor_index = self.monitor_combo.currentData()
+        if monitor_index is None:
+            return
+        if self.config_path is not None:
+            try:
+                update_config(self.config_path, ["display", "monitor_index"], int(monitor_index))
+            except (OSError, ValueError) as exc:
+                self.status_label.setText(f"Could not save display setting: {exc}")
+        if self.capture_worker is not None:
+            self.capture_worker.set_monitor(int(monitor_index))
+
+    def _build_recorder_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        self.rec_status = QLabel(self.recorder.message)
+        self.rec_status.setStyleSheet("font-weight: bold;")
+        layout.addWidget(QLabel(
+            "Global hotkeys: F8 start, F9 stop, Esc abort. Tracks W/S/A/D/Space; "
+            "steering is saved, W is held automatically by the agent."
+        ))
+        layout.addWidget(self.rec_status)
+        self.rec_preview = QPlainTextEdit()
+        self.rec_preview.setReadOnly(True)
+        self.rec_preview.setPlaceholderText("Recorded segments (JSON) appear here")
+        layout.addWidget(self.rec_preview, 1)
+        buttons = QHBoxLayout()
+        self.assign_fob = QPushButton("Assign to TO_FOB Route")
+        self.assign_hq = QPushButton("Assign to TO_HQ Route")
+        self.assign_fob.clicked.connect(lambda: self._assign("to_fob"))
+        self.assign_hq.clicked.connect(lambda: self._assign("to_hq"))
+        buttons.addWidget(self.assign_fob)
+        buttons.addWidget(self.assign_hq)
+        layout.addLayout(buttons)
+        self._rec_was_recording = False
+        return tab
+
+    def _assign(self, route_name: str) -> None:
+        if self.config_path is None:
+            QMessageBox.warning(self, "Route Recorder", "No config file available.")
+            return
+        try:
+            assign_route(self.config_path, route_name, self.recorder.segments)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Route Recorder", str(exc))
+            return
+        self.rec_status.setText(f"Saved {len(self.recorder.segments)} segments to {route_name}")
+
+    def _refresh_recorder(self) -> None:
+        recording = self.recorder.recording
+        if recording:
+            self.rec_status.setText("● RECORDING (F9 stop, Esc abort)")
+            self.rec_status.setStyleSheet("font-weight: bold; color: #e53935;")
+        elif self._rec_was_recording:
+            self.rec_status.setText(self.recorder.message)
+            self.rec_status.setStyleSheet("font-weight: bold;")
+            self.rec_preview.setPlainText(json.dumps(self.recorder.segments, indent=2))
+        self._rec_was_recording = recording
+        self.assign_fob.setEnabled(not recording and bool(self.recorder.segments))
+        self.assign_hq.setEnabled(not recording and bool(self.recorder.segments))
 
     def _toggle_pause(self) -> None:
         if self._paused:
@@ -144,6 +244,7 @@ class ControlPanel(QMainWindow):
         ))
 
     def _refresh(self) -> None:
+        self._refresh_recorder()
         try:
             while True:
                 telemetry = self.telemetry.get_nowait()
@@ -180,6 +281,7 @@ class ControlPanel(QMainWindow):
             pass
 
     def closeEvent(self, event) -> None:
+        self.recorder.remove_hooks()
         if self.halt_input is not None:
             self.halt_input()
         self.commands.put({"kind": "stop"})
