@@ -10,7 +10,7 @@ Windows desktop automation scaffold for a calibrated logistics loop. It uses nat
 
 ## Quick Launch
 
-On Windows, double-click `launch.bat`. It creates the virtual environment if needed, checks/installs dependencies, and opens the control panel without leaving a terminal window open. Python 3.10 or newer must be installed.
+On Windows, double-click `launch.bat`. It creates the virtual environment if needed, installs dependencies, and opens the control panel without leaving a terminal window open. Python 3.10 or newer must be installed. If the app fails during startup, a dialog points to `launch-error.log` with the traceback; dependency installation errors remain visible in the launcher window.
 
 To launch manually from a terminal instead:
 
