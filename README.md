@@ -8,7 +8,11 @@ Windows desktop automation scaffold for a calibrated logistics loop. It uses nat
 - A game resolution matching the configured capture ROIs; `config.json` targets Windowed Fullscreen 2560x1440 (the process enforces DPI awareness).
 - Tesseract OCR installed separately and available on `PATH` if you want speed and damage OCR. Delivery is verified by the `delivery_complete` template or the interaction prompt clearing, not by the bottom-left scoreboard (match score, not FOB stock).
 
-Install and launch from this directory:
+## Quick Launch
+
+On Windows, double-click `launch.bat`. It creates the virtual environment if needed, checks/installs dependencies, and opens the control panel without leaving a terminal window open. Python 3.10 or newer must be installed.
+
+To launch manually from a terminal instead:
 
 ```powershell
 py -m venv .venv
