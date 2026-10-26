@@ -75,3 +75,9 @@ Segments hold W with the optional A/D steering key. These are fixed, map-specifi
 6. **Recovery:** test with an empty route or missing template first. The expected result is recovery/idle without an unverified drive or delivery.
 
 The automated keys are global input. Keep a hand on the physical keyboard and use F12/Esc or Stop if the game state diverges from the preview.
+## Dataset Recording And Neural Net Training
+
+- **Route Recorder tab**: F8 starts, F9 stops, Esc discards. With "Record Synchronized Training Frames" enabled, a 5 Hz sampler writes `dataset/<map>/<session_id>/frames/frame_######.jpg` (640x360, Q85), `minimap/minimap_######.png` (256x256) and `telemetry.csv` (`frame_file,minimap_file,timestamp,map_name,faction,w,s,a,d,space,steer_label`; 0=STRAIGHT, 1=LEFT, 2=RIGHT, 3=BRAKE) through a bounded `queue.Queue(150)` and a background writer thread.
+- **Neural Net Training tab**: trains `model.DrivingNet` (forward view + minimap, `convnet` or `resnet18` trunk) in a `QThread` with class-weighted loss and brightness/contrast augmentation. The best checkpoint is saved to `models/driver_<timestamp>.pt`; choose it under Brain Manager and "Set Active Model" to let the agent drive with it instead of recorded segments (destination templates and timeouts still apply).
+- **Audio cues** (Windows): high beep = recording started / pallet purchased, double high = delivery verified, double low = emergency stop or recovery. F12/Esc runs `InputController.emergency_stop()` (release keys, 0.5 s Space pulse) and sets the FSM to IDLE. The agent taps `L` once per run at the start of `STATE_BUY_PALLET` to lock the doors.
+- The `pallet_menu_header` ROI is 870 px wide (spec 850) because the shipped `pallet_menu_open.png` template is 851 px wide.

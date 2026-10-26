@@ -6,15 +6,20 @@ import ctypes
 import json
 import queue
 import sys
+import threading
 from pathlib import Path
 
 if sys.platform == "win32":
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # must precede any Qt/window creation
+
+import numpy as np
 
 from PyQt6.QtWidgets import QApplication
 
+import audio
 from agent import AgentConfig, LogisticsAgent
 from capture import CaptureConfig, CaptureWorker
+from dataset_logger import prepare_sample
 from gui import ControlPanel
 from input_controller import InputController
 from vision import VisionConfig, VisionWorker
@@ -72,10 +77,34 @@ def main() -> int:
         telemetry,
         initial_priority=config.get("agent", {}).get("initial_priority", "Build"),
     )
+    def training_frame_source():
+        forward = capture_worker.get_forward_view(out=np.empty((360, 640, 3), np.uint8))
+        minimap = capture_worker.get_roi("minimap")
+        if forward is None or minimap is None:
+            return None
+        return prepare_sample(forward, minimap)
+
+    agent_worker.frame_source = training_frame_source
+
+    def activate_model(path: str | None) -> str:
+        """Load a checkpoint for autonomous driving (None reverts to recorded routes)."""
+        if not path:
+            agent_worker.set_policy(None)
+            return "Autonomous model cleared; using recorded routes"
+        from model import DrivingPolicy
+
+        agent_worker.set_policy(DrivingPolicy(path))
+        return f"Active model: {Path(path).name}"
+
     panel = ControlPanel(commands, telemetry, renders, status, halt_input=controller.halt,
         capture_worker=capture_worker,
         config_path=config_path,
+        vision_worker=vision_worker,
+        model_callback=activate_model,
     )
+    panel.recorder.logger.frame_source = training_frame_source
+    dataset_cfg = config.get("dataset", {})
+    panel.recorder.logger.root = Path(__file__).with_name(dataset_cfg.get("root", "dataset"))
 
     hotkey_module = None
     hotkey_handles = []
@@ -85,8 +114,10 @@ def main() -> int:
         hotkey_module = keyboard
 
         def emergency_hotkey() -> None:
-            controller.halt()
-            commands.put({"kind": "emergency"})
+            controller.halt()  # instantly stops further synthesis
+            commands.put({"kind": "emergency"})  # FSM -> IDLE
+            audio.low_double()
+            threading.Thread(target=controller.emergency_stop, name="handbrake", daemon=True).start()
 
         hotkey_handles.append(keyboard.add_hotkey("f12", emergency_hotkey, suppress=False))
         hotkey_handles.append(keyboard.add_hotkey("esc", emergency_hotkey, suppress=False))
@@ -100,6 +131,7 @@ def main() -> int:
 
     def shutdown() -> None:
         controller.halt()
+        panel.recorder.logger.stop()
         capture_worker.stop()
         vision_worker.stop()
         agent_worker.stop()

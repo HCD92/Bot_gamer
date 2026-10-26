@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+import audio
 from capture import _put_latest
 from input_controller import InputController
 from vision import VisionObservation
@@ -96,6 +97,16 @@ class LogisticsAgent(threading.Thread):
         self._last_speed = None
         self._zero_speed_since: float | None = None
         self._recovery_stage = 0
+        self._doors_locked = False
+        self.policy = None
+        self.frame_source = None  # callable -> (forward_bgr, minimap_bgr) | None
+        self._policy_lock = threading.Lock()
+        self.policy_step_seconds = 0.2
+
+    def set_policy(self, policy) -> None:
+        """Install (or clear with None) a trained DrivingPolicy for autonomous driving."""
+        with self._policy_lock:
+            self.policy = policy
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -165,6 +176,7 @@ class LogisticsAgent(threading.Thread):
                 self.input.enable()
                 self._loop_started = time.monotonic()
                 self._route_index = 0
+                self._doors_locked = False
                 self._set_state(State.BUY_PALLET)
             elif kind == "pause" and self.state not in (State.IDLE, State.PAUSED):
                 self._resume_state = self.state
@@ -179,6 +191,7 @@ class LogisticsAgent(threading.Thread):
     def _fail_to_recovery(self, reason: str) -> None:
         self.input.release_all()
         self._recovery_stage = 0
+        audio.low_double()
         self._set_state(State.RECOVERY, reason)
 
     def _check_vehicle(self) -> bool:
@@ -198,6 +211,11 @@ class LogisticsAgent(threading.Thread):
         return True
 
     def _buy_pallet(self) -> None:
+        if not self._doors_locked:
+            self._action = "Locking doors"
+            if not self.input.press("L", 0.08, 0.3):
+                return
+            self._doors_locked = True
         self._action = "Opening pallet menu"
         if not self.input.press("B", 0.12):
             return
@@ -220,6 +238,7 @@ class LogisticsAgent(threading.Thread):
         if not self.input.click_at(int(card["x"]), int(card["y"])):
             return
         time.sleep(0.4)
+        audio.high_single()
         if self.config.close_menu_with_escape:
             # Note: Esc is also the global emergency hotkey, so this is off by default.
             self.input.press("ESC", 0.1)
@@ -278,18 +297,44 @@ class LogisticsAgent(threading.Thread):
 
     def _routes_have(self, route_name: str) -> bool:
         self._reload_routes()
-        return bool(self._routes.get(route_name))
+        return self.policy is not None or bool(self._routes.get(route_name))
 
     def _begin_route(self, state: State) -> None:
         route_name = "to_fob" if state == State.DRIVE_TO_FOB else "to_hq"
         self._reload_routes()
-        if not self._routes.get(route_name):
+        if self.policy is None and not self._routes.get(route_name):
             self._fail_to_recovery(f"Configure route_segments.{route_name}")
             return
         self._route_index = 0
         self._set_state(state)
 
+    def _drive_with_policy(self, policy, route_name: str, next_state: State) -> None:
+        destination_signal = "delivery_zone" if route_name == "to_fob" else "hq_zone"
+        if self._detected(destination_signal):
+            self.input.release_all()
+            self._set_state(next_state)
+            return
+        sample = self.frame_source() if self.frame_source else None
+        if sample is None:
+            self._action = "Waiting for frames"
+            time.sleep(0.05)
+            return
+        label, _ = policy.predict(*sample)
+        self._action = f"Model drive: {('STRAIGHT', 'LEFT', 'RIGHT', 'BRAKE')[label]}"
+        step = self.policy_step_seconds
+        if label == 3:
+            self.input.hold_keys(("S",), step)
+        elif label in (1, 2):
+            self.input.hold_keys(("W", "A" if label == 1 else "D"), step)
+        else:
+            self.input.hold_keys(("W",), step)
+
     def _drive(self, route_name: str, next_state: State) -> None:
+        with self._policy_lock:
+            policy = self.policy
+        if policy is not None:
+            self._drive_with_policy(policy, route_name, next_state)
+            return
         segments = self._routes.get(route_name, [])
         if not segments:
             self._fail_to_recovery(f"Configure route_segments.{route_name}")
@@ -338,7 +383,11 @@ class LogisticsAgent(threading.Thread):
         # Verified by the F-hold finishing plus delivery_complete, or the
         # interaction prompt above the truck bed clearing. Never by scoreboard OCR.
         self._drain_observations_only()
-        complete = self._detected("delivery_complete")
+        complete = (
+            self._detected("delivery_complete")
+            or self._detected("supplies_delivered")
+            or self._detected("delivery_payout")
+        )
         if self._prompt_visible():
             self._prompt_gone_since = None
         elif self._prompt_gone_since is None:
@@ -350,6 +399,7 @@ class LogisticsAgent(threading.Thread):
         )
         if complete or prompt_cleared:
             self._deliveries += 1
+            audio.high_double()
             self._recovery_attempts = 0
             self._unload_started = False
             self._prompt_seen = False

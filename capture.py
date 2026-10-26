@@ -27,8 +27,51 @@ class FramePacket:
     timestamp: float
 
 
+FORWARD_SIZE = (640, 360)  # (width, height)
+
+
+def enable_dpi_awareness() -> None:
+    """Per-monitor DPI awareness so capture and click coordinates are physical pixels."""
+    import sys
+
+    if sys.platform == "win32":
+        import ctypes
+
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except (OSError, AttributeError):
+            pass
+
+
+def _bettercam_monitors() -> list[dict[str, Any]]:
+    try:
+        import bettercam
+
+        outputs = bettercam.__factory.outputs  # one list of outputs per GPU
+        result = []
+        index = 0
+        for adapter in outputs:
+            for output in adapter:
+                index += 1
+                width, height = output.resolution
+                result.append({
+                    "index": index,
+                    "id": index - 1,
+                    "width": width,
+                    "height": height,
+                    "primary": index == 1,
+                    "label": f"Display {index}: {width}x{height}" + (" (Primary)" if index == 1 else ""),
+                })
+        return result
+    except Exception:
+        return []
+
+
 def get_available_monitors() -> list[dict[str, Any]]:
-    """Return attached displays as 1-based indexed dicts (matches mss/capture.monitor)."""
+    """Return attached displays as 1-based indexed dicts (bettercam outputs, else mss)."""
+    found = _bettercam_monitors()
+    if found:
+        return found
     try:
         import mss
     except ImportError:
@@ -129,6 +172,45 @@ class CaptureWorker(threading.Thread):
         self._monitor = max(1, int(config.monitor))
         self.backend = "uninitialized"
         self._window: int | None = None
+        self._latest: FramePacket | None = None
+        self._forward_buffer = np.empty((FORWARD_SIZE[1], FORWARD_SIZE[0], 3), dtype=np.uint8)
+        self._forward_lock = threading.Lock()
+
+    def _publish(self, image: np.ndarray) -> None:
+        packet = FramePacket(image, self._crop_regions(image), time.time())
+        self._latest = packet
+        _put_latest(self.output_queue, packet)
+
+    def get_full_frame(self) -> np.ndarray | None:
+        """Latest full-resolution BGR frame (shared, treat as read-only)."""
+        packet = self._latest
+        return None if packet is None else packet.image
+
+    def get_forward_view(self, out: np.ndarray | None = None) -> np.ndarray | None:
+        """Latest frame downscaled to 640x360. Pass ``out`` to avoid any allocation."""
+        image = self.get_full_frame()
+        if image is None:
+            return None
+        import cv2
+
+        if out is not None:
+            cv2.resize(image, FORWARD_SIZE, dst=out, interpolation=cv2.INTER_AREA)
+            return out
+        with self._forward_lock:
+            return cv2.resize(image, FORWARD_SIZE, dst=self._forward_buffer, interpolation=cv2.INTER_AREA)
+
+    def get_roi(self, name: str) -> np.ndarray | None:
+        """Zero-copy view of a configured ROI inside the latest frame."""
+        image = self.get_full_frame()
+        bounds = self.config.regions.get(name)
+        if image is None or not bounds:
+            return None
+        height, width = image.shape[:2]
+        x, y = max(0, int(bounds["x"])), max(0, int(bounds["y"]))
+        right, bottom = min(width, x + int(bounds["w"])), min(height, y + int(bounds["h"]))
+        if right <= x or bottom <= y:
+            return None
+        return image[y:bottom, x:right]
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -229,10 +311,7 @@ class CaptureWorker(threading.Thread):
                 frame = camera.get_latest_frame()
                 if frame is not None:
                     image = np.asarray(frame)
-                    _put_latest(
-                        self.output_queue,
-                        FramePacket(image, self._crop_regions(image), time.time()),
-                    )
+                    self._publish(image)
                 self._stop_event.wait(max(0.0, interval - (time.monotonic() - started)))
         finally:
             self._release_camera(camera)
@@ -254,10 +333,7 @@ class CaptureWorker(threading.Thread):
                 while not self._should_exit():
                     started = time.monotonic()
                     image = np.asarray(capture.grab(monitor))[:, :, :3].copy()
-                    _put_latest(
-                        self.output_queue,
-                        FramePacket(image, self._crop_regions(image), time.time()),
-                    )
+                    self._publish(image)
                     self._stop_event.wait(max(0.0, interval - (time.monotonic() - started)))
         except Exception as exc:
             self._status(f"mss capture failed: {exc}")
@@ -280,10 +356,7 @@ class CaptureWorker(threading.Thread):
                     if rect is not None:
                         image = np.asarray(capture.grab(rect))[:, :, :3]
                         image = self._scale_to_resolution(np.ascontiguousarray(image))
-                        _put_latest(
-                            self.output_queue,
-                            FramePacket(image, self._crop_regions(image), time.time()),
-                        )
+                        self._publish(image)
                     self._stop_event.wait(max(0.0, interval - (time.monotonic() - started)))
         except Exception as exc:
             self._status(f"window capture failed: {exc}")

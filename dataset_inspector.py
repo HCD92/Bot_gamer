@@ -15,14 +15,16 @@ MIN_SAMPLES = 5000
 MAX_STRAIGHT_PCT = 65.0
 BALANCE_RANGE = (0.7, 1.3)
 OFF_ANGLE_DEG = 25.0
-STEER_COLUMNS = ("steer", "action", "label", "steering")
+STEER_COLUMNS = ("steer_label", "steer", "action", "label", "steering")
 
 
 def _steer_class(raw: str) -> str:
     value = (raw or "").strip().lower()
-    if value in ("a", "left", "steer left (a)", "steer_left", "l"):
+    if value == "3":
+        return "brake"
+    if value in ("1", "a", "left", "steer left (a)", "steer_left", "l"):
         return "left"
-    if value in ("d", "right", "steer right (d)", "steer_right", "r"):
+    if value in ("2", "d", "right", "steer right (d)", "steer_right", "r"):
         return "right"
     return "straight"
 
@@ -69,7 +71,7 @@ def count_recovery_transitions(headings: list[float]) -> int:
 def analyze_dataset(dataset_dir: str | Path = "dataset") -> dict:
     root = Path(dataset_dir)
     files = sorted(root.glob("session_*/telemetry.csv")) + sorted(root.glob("*/*/telemetry.csv"))
-    counts = {"straight": 0, "left": 0, "right": 0}
+    counts = {"straight": 0, "left": 0, "right": 0, "brake": 0}
     total = idle = 0
     headings_all: list[float] = []
     recovery = 0
@@ -137,7 +139,9 @@ def get_readiness_report(dataset_dir: str | Path = "dataset") -> dict:
             + ("left" if need_left else "right") + " turns."
         )
 
-    recovery_ok = m["recovery_transitions"] > 0
+    # Recovery frames can only be judged when heading data was logged.
+    has_headings = m["heading_range"] is not None
+    recovery_ok = m["recovery_transitions"] > 0 or not has_headings
     if not recovery_ok:
         advice.append("No recovery frames (off-angle back to road heading); record corrections.")
 
