@@ -3,6 +3,9 @@
     "hold_noise": 0.08,
     "delay_noise": 0.18
   },
+  "display": {
+    "monitor_index": 1
+  },
   "capture": {
     "monitor": 1,
     "fps": 30,
