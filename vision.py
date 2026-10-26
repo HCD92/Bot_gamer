@@ -17,6 +17,15 @@ import numpy as np
 from capture import FramePacket, _put_latest
 
 
+MIN_MATCH_THRESHOLD = 0.82
+MAX_MATCH_THRESHOLD = 0.88
+
+
+def normalized_threshold(value: float) -> float:
+    """Clamp template-match confidence to the calibrated 0.82-0.88 band."""
+    return min(MAX_MATCH_THRESHOLD, max(MIN_MATCH_THRESHOLD, float(value)))
+
+
 @dataclass(frozen=True)
 class VisionConfig:
     template_dir: str = "assets/templates"
@@ -30,9 +39,10 @@ class VisionConfig:
     def from_dict(cls, data: dict[str, Any]) -> "VisionConfig":
         return cls(
             template_dir=data.get("template_dir", cls.template_dir),
-            thresholds=data.get("thresholds", {}),
+            thresholds={k: normalized_threshold(v) for k, v in data.get("thresholds", {}).items()},
             template_regions=data.get("template_regions", {}),
-            ocr_regions=data.get("ocr_regions", {}),
+            # The bottom-left HUD is the 3-way match score, never FOB stock.
+            ocr_regions={k: v for k, v in data.get("ocr_regions", {}).items() if k != "fob_stock"},
             color_ranges=data.get("color_ranges", {}),
             ocr_interval=float(data.get("ocr_interval", 0.75)),
         )

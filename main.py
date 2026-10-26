@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import queue
 import sys
 from pathlib import Path
+
+if sys.platform == "win32":
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
 
 from PyQt6.QtWidgets import QApplication
 

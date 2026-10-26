@@ -13,6 +13,10 @@ from typing import Iterable
 KEYEVENTF_SCANCODE = 0x0008
 KEYEVENTF_KEYUP = 0x0002
 MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_ABSOLUTE = 0x8000
+MOUSEEVENTF_VIRTUALDESK = 0x4000
 
 SCANCODES = {
     "ESC": 0x01,
@@ -250,6 +254,30 @@ class InputController:
                 )
                 self._send(event)
                 self._halted.wait(max(0.005, duration / steps))
+        finally:
+            self.active_key = "--"
+        return not self._halted.is_set()
+
+    def click_at(self, x: int, y: int, hold_seconds: float = 0.08) -> bool:
+        """Left-click at absolute virtual-desktop pixel coordinates (DPI-aware process)."""
+        if self._halted.is_set():
+            return False
+        width = self._user32.GetSystemMetrics(78) or 1
+        height = self._user32.GetSystemMetrics(79) or 1
+        left = self._user32.GetSystemMetrics(76)
+        top = self._user32.GetSystemMetrics(77)
+        nx = round((x - left) * 65535 / max(1, width - 1))
+        ny = round((y - top) * 65535 / max(1, height - 1))
+        base = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+        self.active_key = "CLICK"
+        try:
+            if not self._send(_INPUT(type=0, mi=_MOUSEINPUT(nx, ny, 0, base | MOUSEEVENTF_MOVE, 0, 0))):
+                return False
+            self._halted.wait(0.06)
+            if not self._send(_INPUT(type=0, mi=_MOUSEINPUT(nx, ny, 0, base | MOUSEEVENTF_LEFTDOWN, 0, 0))):
+                return False
+            self._halted.wait(self._duration(hold_seconds))
+            self._send(_INPUT(type=0, mi=_MOUSEINPUT(nx, ny, 0, base | MOUSEEVENTF_LEFTUP, 0, 0)))
         finally:
             self.active_key = "--"
         return not self._halted.is_set()

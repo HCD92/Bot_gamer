@@ -29,7 +29,7 @@ class State(str, Enum):
 class AgentConfig:
     timeouts: dict[str, float]
     signals: dict[str, str]
-    pallet_keys: dict[str, str]
+    menu_clicks: dict[str, Any]
     route_segments: dict[str, list[dict[str, Any]]]
     unload_seconds: float = 8.0
     menu_settle_seconds: float = 0.35
@@ -37,13 +37,15 @@ class AgentConfig:
     recovery_reverse_seconds: float = 1.2
     max_damage: float = 75.0
     max_deliveries: int = 0
+    prompt_clear_seconds: float = 1.5
+    close_menu_with_escape: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentConfig":
         return cls(
             timeouts={key: float(value) for key, value in data.get("timeouts", {}).items()},
             signals=data.get("signals", {}),
-            pallet_keys=data.get("pallet_keys", {}),
+            menu_clicks=data.get("menu_clicks", {}),
             route_segments=data.get("route_segments", {}),
             unload_seconds=float(data.get("unload_seconds", 8.0)),
             menu_settle_seconds=float(data.get("menu_settle_seconds", 0.35)),
@@ -51,6 +53,8 @@ class AgentConfig:
             recovery_reverse_seconds=float(data.get("recovery_reverse_seconds", 1.2)),
             max_damage=float(data.get("max_damage", 75.0)),
             max_deliveries=int(data.get("max_deliveries", 0)),
+            prompt_clear_seconds=float(data.get("prompt_clear_seconds", 1.5)),
+            close_menu_with_escape=bool(data.get("close_menu_with_escape", False)),
         )
 
 
@@ -81,8 +85,9 @@ class LogisticsAgent(threading.Thread):
         self._action = "Standby"
         self._route_index = 0
         self._recovery_attempts = 0
-        self._stock_before: int | float | None = None
         self._unload_started = False
+        self._prompt_seen = False
+        self._prompt_gone_since: float | None = None
         self._last_speed = None
         self._zero_speed_since: float | None = None
         self._recovery_stage = 0
@@ -195,15 +200,33 @@ class LogisticsAgent(threading.Thread):
         if not self._detected("pallet_menu_open"):
             self._fail_to_recovery("Pallet menu not verified")
             return
-        key = self.config.pallet_keys.get(self.priority.lower())
-        if not key:
-            self._fail_to_recovery(f"No menu key configured for {self.priority}")
+        if not self._click("pallets_tab"):
             return
-        if not self.input.press(key, 0.12) or not self.input.press("ENTER", 0.12):
+        category = {"mechanical": "repair"}.get(self.priority.lower(), self.priority.lower())
+        card = self.config.menu_clicks.get("cards", {}).get(category)
+        if not card:
+            self._fail_to_recovery(f"No card click configured for {self.priority}")
             return
-        self.input.press("B", 0.1)
+        if not self.input.click_at(int(card["x"]), int(card["y"])):
+            return
+        time.sleep(0.4)
+        if self.config.close_menu_with_escape:
+            # Note: Esc is also the global emergency hotkey, so this is off by default.
+            self.input.press("ESC", 0.1)
+        elif not self._click("confirm_exit"):
+            return
         self._route_index = 0
         self._set_state(State.CHECK_MAP)
+
+    def _click(self, name: str) -> bool:
+        point = self.config.menu_clicks.get(name)
+        if not point:
+            self._fail_to_recovery(f"No click target configured for {name}")
+            return False
+        if not self.input.click_at(int(point["x"]), int(point["y"])):
+            return False
+        time.sleep(0.4)
+        return True
 
     def _drain_observations_only(self) -> None:
         while True:
@@ -240,8 +263,6 @@ class LogisticsAgent(threading.Thread):
             return
         destination_signal = "delivery_zone" if route_name == "to_fob" else "hq_zone"
         if self._detected(destination_signal):
-            if route_name == "to_fob":
-                self._stock_before = self._value("fob_stock")
             self._set_state(next_state)
             return
         segment = segments[self._route_index]
@@ -259,30 +280,44 @@ class LogisticsAgent(threading.Thread):
         if self._expired():
             self._fail_to_recovery(f"{route_name} route timed out")
 
+    def _prompt_visible(self) -> bool:
+        return self._detected("deploy_prompt") or self._detected("delivery_zone")
+
     def _deliver(self) -> None:
-        if not self._detected("delivery_zone"):
-            self._fail_to_recovery("Delivery zone signal lost")
-            return
         if not self._unload_started:
+            if not self._prompt_visible():
+                self._fail_to_recovery("Delivery zone signal lost")
+                return
+            self._prompt_seen = True
             self._action = "Dropping pallet"
             if not self.input.press("G", 0.10):
                 return
-            self._action = "Unloading pallet"
+            time.sleep(0.5)
+            self._action = "Unpacking pallet"
             if not self.input.hold("F", self.config.unload_seconds):
                 return
             self._unload_started = True
+            self._prompt_gone_since = None
             return
-        complete = self._detected("unload_complete")
-        stock_after = self._value("fob_stock")
-        stock_updated = (
-            self._stock_before is not None
-            and stock_after is not None
-            and stock_after > self._stock_before
+        # Verified by the F-hold finishing plus delivery_complete, or the
+        # interaction prompt above the truck bed clearing. Never by scoreboard OCR.
+        self._drain_observations_only()
+        complete = self._detected("delivery_complete")
+        if self._prompt_visible():
+            self._prompt_gone_since = None
+        elif self._prompt_gone_since is None:
+            self._prompt_gone_since = time.monotonic()
+        prompt_cleared = (
+            self._prompt_seen
+            and self._prompt_gone_since is not None
+            and time.monotonic() - self._prompt_gone_since >= self.config.prompt_clear_seconds
         )
-        if complete and stock_updated:
+        if complete or prompt_cleared:
             self._deliveries += 1
             self._recovery_attempts = 0
             self._unload_started = False
+            self._prompt_seen = False
+            self._prompt_gone_since = None
             self._route_index = 0
             self._loop_started = time.monotonic()
             if self.config.max_deliveries > 0 and self._deliveries >= self.config.max_deliveries:
@@ -293,7 +328,8 @@ class LogisticsAgent(threading.Thread):
             else:
                 self._set_state(State.BUY_PALLET)
         elif self._expired():
-            self._fail_to_recovery("Unload or FOB stock update not verified")
+            self._unload_started = False
+            self._fail_to_recovery("Delivery completion not verified")
 
     def _recover(self) -> None:
         if self._recovery_stage == 0:
