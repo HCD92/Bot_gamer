@@ -50,6 +50,55 @@ def get_available_monitors() -> list[dict[str, Any]]:
     return result
 
 
+def get_open_windows() -> list[dict[str, Any]]:
+    """Return visible titled top-level windows (Windows only)."""
+    import sys
+
+    if sys.platform != "win32":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    found: list[dict[str, Any]] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def callback(hwnd, _lparam):
+        if user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buffer = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buffer, length + 1)
+                found.append({"hwnd": int(hwnd), "title": buffer.value})
+        return True
+
+    user32.EnumWindows(callback, 0)
+    return found
+
+
+def get_window_rect(hwnd: int) -> dict[str, int] | None:
+    """Client-area rectangle of a window in screen coordinates, or None."""
+    import sys
+
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    if not user32.IsWindow(hwnd) or user32.IsIconic(hwnd):
+        return None
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        return None
+    origin = wintypes.POINT(0, 0)
+    user32.ClientToScreen(hwnd, ctypes.byref(origin))
+    width, height = rect.right - rect.left, rect.bottom - rect.top
+    if width < 16 or height < 16:
+        return None
+    return {"left": origin.x, "top": origin.y, "width": width, "height": height}
+
+
 def _put_latest(target: queue.Queue, item: Any) -> None:
     try:
         target.put_nowait(item)
@@ -79,6 +128,7 @@ class CaptureWorker(threading.Thread):
         self._switch_event = threading.Event()
         self._monitor = max(1, int(config.monitor))
         self.backend = "uninitialized"
+        self._window: int | None = None
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -93,6 +143,25 @@ class CaptureWorker(threading.Thread):
         if monitor_index != self._monitor:
             self._monitor = monitor_index
             self._switch_event.set()
+
+    @property
+    def window(self) -> int | None:
+        return self._window
+
+    def set_window(self, hwnd: int | None) -> None:
+        """Capture a specific window (None returns to full-display capture)."""
+        if hwnd != self._window:
+            self._window = hwnd
+            self._switch_event.set()
+
+    def _scale_to_resolution(self, image: np.ndarray) -> np.ndarray:
+        width = int(self.config.resolution.get("width", 0))
+        height = int(self.config.resolution.get("height", 0))
+        if width <= 0 or height <= 0 or image.shape[:2] == (height, width):
+            return image
+        import cv2
+
+        return cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
 
     def _should_exit(self) -> bool:
         return self._stop_event.is_set() or self._switch_event.is_set()
@@ -121,6 +190,9 @@ class CaptureWorker(threading.Thread):
                 return
 
     def _run_once(self) -> None:
+        if self._window is not None:
+            self._run_window()
+            return
         if self.config.use_bettercam:
             camera = None
             try:
@@ -189,3 +261,29 @@ class CaptureWorker(threading.Thread):
                     self._stop_event.wait(max(0.0, interval - (time.monotonic() - started)))
         except Exception as exc:
             self._status(f"mss capture failed: {exc}")
+
+    def _run_window(self) -> None:
+        try:
+            import mss
+        except ImportError as exc:
+            self._status(f"Window capture unavailable: install mss ({exc})")
+            return
+        self.backend = "mss-window"
+        interval = 1.0 / max(1, self.config.fps)
+        hwnd = self._window
+        self._status(f"Capture backend: window {hwnd}, scaled to match resolution")
+        try:
+            with mss.mss() as capture:
+                while not self._should_exit():
+                    started = time.monotonic()
+                    rect = get_window_rect(hwnd)
+                    if rect is not None:
+                        image = np.asarray(capture.grab(rect))[:, :, :3]
+                        image = self._scale_to_resolution(np.ascontiguousarray(image))
+                        _put_latest(
+                            self.output_queue,
+                            FramePacket(image, self._crop_regions(image), time.time()),
+                        )
+                    self._stop_event.wait(max(0.0, interval - (time.monotonic() - started)))
+        except Exception as exc:
+            self._status(f"window capture failed: {exc}")
