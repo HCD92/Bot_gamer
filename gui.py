@@ -10,6 +10,7 @@ import cv2
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from capture import get_available_monitors, get_open_windows
+from dataset_inspector import MIN_SAMPLES, get_readiness_report
 from recorder import RouteRecorder, assign_route, update_config
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -21,6 +22,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -211,8 +213,35 @@ class ControlPanel(QMainWindow):
         buttons.addWidget(self.assign_fob)
         buttons.addWidget(self.assign_hq)
         layout.addLayout(buttons)
+        card = QGroupBox("Dataset Readiness")
+        card_layout = QVBoxLayout(card)
+        self.ds_progress = QProgressBar()
+        self.ds_progress.setRange(0, MIN_SAMPLES)
+        self.ds_progress.setFormat(f"%v / {MIN_SAMPLES} frames")
+        self.ds_dist = QLabel("Straight: 0% | Left: 0% | Right: 0%")
+        self.ds_status = QLabel("[Low Volume]")
+        self.ds_status.setStyleSheet("font-weight: bold;")
+        self.ds_advice = QLabel("")
+        self.ds_advice.setWordWrap(True)
+        analyze = QPushButton("Analyze Recorded Data")
+        analyze.clicked.connect(self._analyze_dataset)
+        for widget in (self.ds_progress, self.ds_dist, self.ds_status, self.ds_advice, analyze):
+            card_layout.addWidget(widget)
+        layout.addWidget(card)
         self._rec_was_recording = False
         return tab
+
+    def _analyze_dataset(self) -> None:
+        report = get_readiness_report()
+        m = report["metrics"]
+        self.ds_progress.setValue(min(m["moving_frames"], MIN_SAMPLES))
+        p = m["pct"]
+        self.ds_dist.setText(
+            f"Straight: {p['straight']:.0f}% | Left: {p['left']:.0f}% | Right: {p['right']:.0f}%"
+            f"  (score {report['score']:.0f}%, {m['duration_minutes']:.1f} min)"
+        )
+        self.ds_status.setText(f"[{report['status']}]")
+        self.ds_advice.setText("\n".join(report["advice"]))
 
     def _assign(self, route_name: str) -> None:
         if self.config_path is None:
