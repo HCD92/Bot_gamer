@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
-from capture import get_available_monitors
+from capture import get_available_monitors, get_open_windows
 from recorder import RouteRecorder, assign_route, update_config
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -101,6 +101,15 @@ class ControlPanel(QMainWindow):
         self._populate_monitors()
         self.monitor_combo.currentIndexChanged.connect(self._monitor_changed)
         display_layout.addWidget(self.monitor_combo, 1)
+        display_layout.addWidget(QLabel("Window"))
+        self.window_combo = QComboBox()
+        self.window_combo.setMinimumWidth(260)
+        display_layout.addWidget(self.window_combo, 1)
+        refresh_windows = QPushButton("Refresh")
+        refresh_windows.clicked.connect(self._populate_windows)
+        display_layout.addWidget(refresh_windows)
+        self._populate_windows()
+        self.window_combo.currentIndexChanged.connect(self._window_changed)
         layout.addWidget(display_box)
 
         self.preview = QLabel("Waiting for capture")
@@ -152,6 +161,21 @@ class ControlPanel(QMainWindow):
             self.monitor_combo.setCurrentIndex(position)
         self.monitor_combo.setEnabled(bool(monitors))
         self.monitor_combo.blockSignals(False)
+
+    def _populate_windows(self) -> None:
+        current = self.window_combo.currentData()
+        self.window_combo.blockSignals(True)
+        self.window_combo.clear()
+        self.window_combo.addItem("Full display", None)
+        for win in sorted(get_open_windows(), key=lambda w: w["title"].lower()):
+            self.window_combo.addItem(win["title"], win["hwnd"])
+        position = self.window_combo.findData(current)
+        self.window_combo.setCurrentIndex(max(0, position))
+        self.window_combo.blockSignals(False)
+
+    def _window_changed(self, _index: int) -> None:
+        if self.capture_worker is not None:
+            self.capture_worker.set_window(self.window_combo.currentData())
 
     def _monitor_changed(self, _index: int) -> None:
         monitor_index = self.monitor_combo.currentData()
