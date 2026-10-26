@@ -5,8 +5,8 @@ Windows desktop automation scaffold for a calibrated logistics loop. It uses nat
 ## Requirements
 
 - Windows 10/11, Python 3.10+, and the game running in windowed or borderless mode.
-- A game resolution matching the configured capture ROIs; `config.json` starts with 1920x1080 example coordinates.
-- Tesseract OCR installed separately and available on `PATH` if you want speed, damage, and FOB stock OCR. Without it, delivery stock confirmation cannot succeed.
+- A game resolution matching the configured capture ROIs; `config.json` targets Windowed Fullscreen 2560x1440 (the process enforces DPI awareness).
+- Tesseract OCR installed separately and available on `PATH` if you want speed and damage OCR. Delivery is verified by the `delivery_complete` template or the interaction prompt clearing, not by the bottom-left scoreboard (match score, not FOB stock).
 
 Install and launch from this directory:
 
@@ -36,7 +36,7 @@ Create `assets/templates/` and capture tightly cropped PNGs from the same game r
 - `unload_complete.png`: the completed unload state (not an in-progress bar).
 - `hq_zone.png`: an unambiguous HQ loading/depot indicator.
 
-Use lossless screenshots, avoid animated/glowing edges, and keep each crop at its on-screen pixel size. Adjust per-template confidence thresholds and `template_regions` in `config.json`. The stock OCR region must contain the numeric FOB stock value clearly; the speedometer and damage ROIs should contain only their respective readouts. Tesseract is optional at import time, but `fob_stock` OCR is required for delivery verification.
+Use lossless screenshots, avoid animated/glowing edges, and keep each crop at its on-screen pixel size. Adjust per-template confidence thresholds and `template_regions` in `config.json`. The speedometer and damage ROIs should contain only their respective readouts. Template thresholds are clamped to 0.82–0.88.
 
 Adjust all `capture.regions` coordinates for your display. In particular, `tactical_map` should cover the map opened by M, and the HUD regions should exclude neighboring numbers/text where possible. The live preview draws ROI rectangles and template matches; blue outlines identify ROIs and green outlines identify detections.
 
@@ -67,7 +67,7 @@ Segments hold W with the optional A/D steering key. These are fixed, map-specifi
 2. **Capture-only:** launch with the game visible; confirm the live preview updates, the selected monitor is correct, and every ROI outline encloses the intended UI element.
 3. **Vision-only:** populate the five template files, verify their green boxes in the preview, and confirm OCR values are stable while stationary. Do not start the FSM yet.
 4. **Input safety:** with the game foregrounded and the vehicle parked, click Start only after route and menu controls are calibrated; verify the buy menu opens. Press Pause, Stop, then F12/Esc in separate checks and confirm input releases immediately.
-5. **Delivery loop:** use a safe test route and low speed; verify menu selection, map marker, destination indicator, pallet drop, unload completion, and a strictly increased FOB stock reading before allowing the return leg.
+5. **Delivery loop:** use a safe test route and low speed; verify menu selection, map marker, destination indicator, pallet drop, unload completion, and the delivery_complete/prompt-cleared signal before allowing the return leg.
 6. **Recovery:** test with an empty route or missing template first. The expected result is recovery/idle without an unverified drive or delivery.
 
 The automated keys are global input. Keep a hand on the physical keyboard and use F12/Esc or Stop if the game state diverges from the preview.
