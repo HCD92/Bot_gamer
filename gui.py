@@ -11,7 +11,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from capture import get_available_monitors, get_open_windows
 from dataset_inspector import MIN_SAMPLES, get_readiness_report
-from recorder import RouteRecorder, assign_route, update_config
+from recorder import DIRECTIONS, FACTIONS, MAPS, RouteRecorder, assign_route, update_config
 from PyQt6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -201,6 +201,17 @@ class ControlPanel(QMainWindow):
             "steering is saved, W is held automatically by the agent."
         ))
         layout.addWidget(self.rec_status)
+        selectors = QHBoxLayout()
+        self.map_combo, self.faction_combo, self.direction_combo = QComboBox(), QComboBox(), QComboBox()
+        self.map_combo.addItems(MAPS)
+        self.faction_combo.addItems(FACTIONS)
+        self.direction_combo.addItems(DIRECTIONS)
+        for label, combo in (("Map", self.map_combo), ("Faction", self.faction_combo),
+                             ("Leg", self.direction_combo)):
+            selectors.addWidget(QLabel(label))
+            selectors.addWidget(combo)
+        layout.addLayout(selectors)
+        self.map_combo.currentTextChanged.connect(self._on_map_changed)
         self.rec_preview = QPlainTextEdit()
         self.rec_preview.setReadOnly(True)
         self.rec_preview.setPlaceholderText("Recorded segments (JSON) appear here")
@@ -243,19 +254,32 @@ class ControlPanel(QMainWindow):
         self.ds_status.setText(f"[{report['status']}]")
         self.ds_advice.setText("\n".join(report["advice"]))
 
+    def _on_map_changed(self, map_name: str) -> None:
+        if self.config_path is None:
+            return
+        try:
+            update_config(self.config_path, ["agent", "active_map"], map_name)
+        except (OSError, ValueError) as exc:
+            self.rec_status.setText(f"Could not save active map: {exc}")
+
     def _assign(self, route_name: str) -> None:
         if self.config_path is None:
             QMessageBox.warning(self, "Route Recorder", "No config file available.")
             return
         try:
-            assign_route(self.config_path, route_name, self.recorder.segments)
+            assign_route(self.config_path, route_name, self.recorder.segments, self.map_combo.currentText())
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Route Recorder", str(exc))
             return
-        self.rec_status.setText(f"Saved {len(self.recorder.segments)} segments to {route_name}")
+        self.rec_status.setText(f"Saved {len(self.recorder.segments)} segments to {self.map_combo.currentText()}/{route_name}")
 
     def _refresh_recorder(self) -> None:
         recording = self.recorder.recording
+        self.recorder.map_name = self.map_combo.currentText()
+        self.recorder.faction = self.faction_combo.currentText()
+        self.recorder.direction = self.direction_combo.currentText()
+        for combo in (self.map_combo, self.faction_combo, self.direction_combo):
+            combo.setEnabled(not recording)
         if recording:
             self.rec_status.setText("● RECORDING (F9 stop, Esc abort)")
             self.rec_status.setStyleSheet("font-weight: bold; color: #e53935;")

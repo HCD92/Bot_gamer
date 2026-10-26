@@ -10,6 +10,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from dataset_logger import DatasetLogger
+
+MAPS = ("Bakurani", "Ozeti", "Zestafona")
+FACTIONS = ("Manticore", "Valkyra", "Lonestar")
+DIRECTIONS = ("TO_FOB", "TO_HQ")
+
 TRACKED_KEYS = {"w": "W", "s": "S", "a": "A", "d": "D", "space": "SPACE"}
 MIN_SEGMENT_SECONDS = 0.05
 MAX_SEGMENT_SECONDS = 8.0  # agent clamps each segment to this length
@@ -92,6 +98,8 @@ class RouteRecorder:
         self.message = "Idle. F8 start, F9 stop, Esc abort."
         self._keyboard = None
         self._handles: list[Any] = []
+        self.logger = DatasetLogger()
+        self.map_name, self.faction, self.direction = MAPS[0], FACTIONS[0], DIRECTIONS[0]
 
     def _steer(self) -> str:
         # Opposing keys cancel; otherwise the most recently pressed wins.
@@ -112,6 +120,7 @@ class RouteRecorder:
             self.segments, self.stats = [], {}
             self.recording = True
             self.message = "RECORDING..."
+            self.logger.start(self.map_name, self.faction, self.direction)
 
     def stop(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -119,6 +128,7 @@ class RouteRecorder:
                 return self.segments
             now = time.perf_counter()
             self.recording = False
+            self.logger.stop()
             for key, since in self._pressed_since.items():
                 self._held_totals[key] = self._held_totals.get(key, 0.0) + now - since
             self.segments = build_segments(self._changes, now)
@@ -134,6 +144,7 @@ class RouteRecorder:
         with self._lock:
             if self.recording:
                 self.recording = False
+                self.logger.stop()
                 self.segments, self.stats = [], {}
                 self.message = "Recording aborted; nothing saved."
 
@@ -158,6 +169,7 @@ class RouteRecorder:
                     self._held_totals[key] = self._held_totals.get(key, 0.0) + now - since
             if self.recording:
                 steer = self._steer()
+                self.logger.log(key, is_down, steer)
                 if steer != self._changes[-1][1]:
                     self._changes.append((now, steer))
 
@@ -219,9 +231,17 @@ def update_config(path: str | Path, keys: list[str], value: Any) -> None:
         raise
 
 
-def assign_route(path: str | Path, route_name: str, segments: list[dict[str, Any]]) -> None:
+def assign_route(
+    path: str | Path,
+    route_name: str,
+    segments: list[dict[str, Any]],
+    map_name: str | None = None,
+) -> None:
     if route_name not in ("to_fob", "to_hq"):
         raise ValueError(f"Unknown route: {route_name}")
     if not segments:
         raise ValueError("No recorded segments to save")
-    update_config(path, ["agent", "route_segments", route_name], segments)
+    if map_name:
+        update_config(path, ["routes", map_name, route_name], segments)
+    else:
+        update_config(path, ["agent", "route_segments", route_name], segments)
