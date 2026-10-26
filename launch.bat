@@ -16,10 +16,10 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 echo Checking dependencies...
-".venv\Scripts\python.exe" -m pip install --disable-pip-version-check --quiet -r requirements.txt
+".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -r requirements.txt
 if errorlevel 1 goto setup_failed
 
-start "" ".venv\Scripts\pythonw.exe" "%~dp0main.py"
+start "" ".venv\Scripts\pythonw.exe" "%~dp0launch.py"
 exit /b 0
 
 :setup_failed
