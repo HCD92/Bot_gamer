@@ -27,10 +27,10 @@
         "h": 867
       },
       "pallet_menu_header": {
-        "x": 400,
-        "y": 120,
-        "w": 900,
-        "h": 200
+        "x": 100,
+        "y": 0,
+        "w": 1000,
+        "h": 120
       },
       "interaction_prompt": {
         "x": 880,
@@ -55,7 +55,35 @@
         "y": 1133,
         "w": 827,
         "h": 160
+      },
+      "hq_safe_banner": {
+        "x": 1000,
+        "y": 60,
+        "w": 560,
+        "h": 120
+      },
+      "vendor_prompt": {
+        "x": 960,
+        "y": 1060,
+        "w": 640,
+        "h": 130
+      },
+      "notification_feed": {
+        "x": 1760,
+        "y": 100,
+        "w": 780,
+        "h": 260
+      },
+      "delivery_cash_roi": {
+        "x": 960,
+        "y": 520,
+        "w": 640,
+        "h": 220
       }
+    },
+    "resolution": {
+      "width": 2560,
+      "height": 1440
     }
   },
   "vision": {
@@ -67,7 +95,12 @@
       "delivery_complete": 0.86,
       "friendly_fob": 0.82,
       "pallets_tab": 0.85,
-      "confirm_exit": 0.85
+      "confirm_exit": 0.85,
+      "hq_safe_zone": 0.82,
+      "buy_supplies_prompt": 0.82,
+      "friendly_fob_map": 0.82,
+      "supplies_delivered": 0.82,
+      "delivery_payout": 0.82
     },
     "template_regions": {
       "pallet_menu_open": "pallet_menu_header",
@@ -76,7 +109,12 @@
       "delivery_complete": "interaction_prompt",
       "friendly_fob": "tactical_map",
       "pallets_tab": "pallet_menu",
-      "confirm_exit": "pallet_menu"
+      "confirm_exit": "pallet_menu",
+      "hq_safe_zone": "hq_safe_banner",
+      "buy_supplies_prompt": "vendor_prompt",
+      "friendly_fob_map": "tactical_map",
+      "supplies_delivered": "notification_feed",
+      "delivery_payout": "delivery_cash_roi"
     },
     "ocr_regions": {
       "speed": "speedometer",
