@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -56,14 +57,25 @@ class ControlPanel(QMainWindow):
         )
         toolbar.addWidget(QLabel("Supply priority"))
         toolbar.addWidget(self.priority)
+        toolbar.addWidget(QLabel("Batch deliveries"))
+        self.batch_size = QSpinBox()
+        self.batch_size.setRange(1, 1000)
+        self.batch_size.setValue(10)
+        self.batch_size.setToolTip("Stop after this many verified deliveries")
+        toolbar.addWidget(self.batch_size)
         toolbar.addStretch(1)
         self.start_button = QPushButton("Start")
+        self.batch_button = QPushButton("Run batch")
         self.pause_button = QPushButton("Pause")
         self.stop_button = QPushButton("Stop")
         self.start_button.clicked.connect(lambda: self.commands.put({"kind": "start"}))
+        self.batch_button.clicked.connect(
+            lambda: self.commands.put({"kind": "start", "deliveries": self.batch_size.value()})
+        )
         self.pause_button.clicked.connect(self._toggle_pause)
         self.stop_button.clicked.connect(self._stop)
         toolbar.addWidget(self.start_button)
+        toolbar.addWidget(self.batch_button)
         toolbar.addWidget(self.pause_button)
         toolbar.addWidget(self.stop_button)
         layout.addLayout(toolbar)
@@ -140,7 +152,11 @@ class ControlPanel(QMainWindow):
                 self.pause_button.setText("Resume" if self._paused else "Pause")
                 self.action_label.setText(telemetry.get("action", "Standby"))
                 self.key_label.setText(telemetry.get("active_key", "--"))
-                self.deliveries_label.setText(str(telemetry.get("deliveries", 0)))
+                deliveries = telemetry.get("deliveries", 0)
+                target = telemetry.get("delivery_target", 0)
+                self.deliveries_label.setText(
+                    f"{deliveries} / {target}" if target > 0 else str(deliveries)
+                )
                 self.duration_label.setText(f"{telemetry.get('loop_seconds', 0.0):.1f} s")
                 selected = telemetry.get("priority")
                 if selected and self.priority.currentText() != selected:
