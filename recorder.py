@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import audio
 from dataset_logger import DatasetLogger
 
 MAPS = ("Bakurani", "Ozeti", "Zestafona")
@@ -99,6 +100,8 @@ class RouteRecorder:
         self._keyboard = None
         self._handles: list[Any] = []
         self.logger = DatasetLogger()
+        self.logger.key_source = self.key_snapshot
+        self.record_frames = True
         self.map_name, self.faction, self.direction = MAPS[0], FACTIONS[0], DIRECTIONS[0]
 
     def _steer(self) -> str:
@@ -110,8 +113,18 @@ class RouteRecorder:
                 return key
         return ""
 
+    def key_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "w": "W" in self._down, "s": "S" in self._down,
+                "a": "A" in self._down, "d": "D" in self._down,
+                "space": "SPACE" in self._down, "steer": self._steer(),
+            }
+
     def start(self) -> None:
         with self._lock:
+            if self.recording:
+                return
             now = time.perf_counter()
             self._started = now
             self._pressed_since = {key: now for key in self._down}
@@ -120,7 +133,9 @@ class RouteRecorder:
             self.segments, self.stats = [], {}
             self.recording = True
             self.message = "RECORDING..."
+        if self.record_frames and self.logger.frame_source is not None:
             self.logger.start(self.map_name, self.faction, self.direction)
+        audio.high_single()
 
     def stop(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -128,7 +143,6 @@ class RouteRecorder:
                 return self.segments
             now = time.perf_counter()
             self.recording = False
-            self.logger.stop()
             for key, since in self._pressed_since.items():
                 self._held_totals[key] = self._held_totals.get(key, 0.0) + now - since
             self.segments = build_segments(self._changes, now)
@@ -138,15 +152,18 @@ class RouteRecorder:
                 f"Stopped: {self.stats['total_seconds']:.2f}s, "
                 f"{self.stats['turns']} turns, {self.stats['segments']} segments"
             )
-            return self.segments
+            segments = self.segments
+        self.logger.stop()  # outside the lock: the sampler thread calls key_snapshot()
+        return segments
 
     def abort(self) -> None:
         with self._lock:
-            if self.recording:
-                self.recording = False
-                self.logger.stop()
-                self.segments, self.stats = [], {}
-                self.message = "Recording aborted; nothing saved."
+            if not self.recording:
+                return
+            self.recording = False
+            self.segments, self.stats = [], {}
+            self.message = "Recording discarded; nothing saved."
+        self.logger.discard()
 
     def handle_event(self, name: str, is_down: bool, timestamp: float | None = None) -> None:
         key = TRACKED_KEYS.get(name.lower())
@@ -169,7 +186,6 @@ class RouteRecorder:
                     self._held_totals[key] = self._held_totals.get(key, 0.0) + now - since
             if self.recording:
                 steer = self._steer()
-                self.logger.log(key, is_down, steer)
                 if steer != self._changes[-1][1]:
                     self._changes.append((now, steer))
 

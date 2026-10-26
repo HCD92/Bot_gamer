@@ -47,6 +47,8 @@ SCANCODES = {
     "F": 0x21,
     "G": 0x22,
     "H": 0x23,
+    "L": 0x26,
+    "B": 0x30,
     "M": 0x32,
     "SPACE": 0x39,
     "F12": 0x58,
@@ -111,6 +113,7 @@ class InputController:
         self._hold_noise = max(0.0, hold_noise)
         self._delay_noise = max(0.0, delay_noise)
         self.active_key = "--"
+        self._pulsing_handbrake = False
 
     @property
     def halted(self) -> bool:
@@ -124,8 +127,33 @@ class InputController:
         self._halted.set()
         self.release_all()
 
-    def _send(self, event: _INPUT) -> bool:
-        if self._halted.is_set():
+    def emergency_stop(self, handbrake_seconds: float = 0.5) -> None:
+        """Halt all synthesis, release movement keys, and pulse Space to stop the vehicle."""
+        self._halted.set()
+        self._pulsing_handbrake = True
+        try:
+            self.release_all()
+            for key in ("W", "A", "D", "S"):
+                try:
+                    self._keyboard_event(key, key_up=True, force=True)
+                except OSError:
+                    pass
+            self.active_key = "SPACE"
+            try:
+                self._keyboard_event("SPACE", force=True)
+                time.sleep(max(0.0, handbrake_seconds))
+            finally:
+                self._pulsing_handbrake = False
+                try:
+                    self._keyboard_event("SPACE", key_up=True, force=True)
+                except OSError:
+                    pass
+        finally:
+            self._pulsing_handbrake = False
+            self.active_key = "--"
+
+    def _send(self, event: _INPUT, force: bool = False) -> bool:
+        if self._halted.is_set() and not force:
             is_key_release = event.type == 1 and bool(event.ki.dwFlags & KEYEVENTF_KEYUP)
             if not is_key_release:
                 return False
@@ -134,13 +162,13 @@ class InputController:
             raise ctypes.WinError(ctypes.get_last_error())
         return True
 
-    def _keyboard_event(self, key: str, key_up: bool = False) -> bool:
+    def _keyboard_event(self, key: str, key_up: bool = False, force: bool = False) -> bool:
         normalized = key.upper()
         if normalized not in SCANCODES:
             raise ValueError(f"Unsupported key: {key}")
         flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if key_up else 0)
         event = _INPUT(type=1, ki=_KEYBDINPUT(0, SCANCODES[normalized], flags, 0, 0))
-        if not self._send(event):
+        if not self._send(event, force):
             return False
         with self._lock:
             if key_up:
@@ -286,6 +314,8 @@ class InputController:
         with self._lock:
             pressed = tuple(self._pressed)
         for key in pressed:
+            if key == "SPACE" and self._pulsing_handbrake:
+                continue
             try:
                 self._keyboard_event(key, key_up=True)
             except OSError:

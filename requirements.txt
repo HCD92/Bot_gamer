@@ -1,5 +1,7 @@
-opencv-python
+torch
+torchvision
 PyQt6
+opencv-python
 bettercam
 mss
 numpy

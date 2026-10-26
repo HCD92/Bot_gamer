@@ -59,6 +59,7 @@ class VisionObservation:
     timestamp: float
     detections: dict[str, Detection]
     values: dict[str, int | float | None]
+    scores: dict[str, float] = field(default_factory=dict)
 
     def detected(self, name: str) -> bool:
         return name in self.detections
@@ -77,6 +78,9 @@ class VisionEngine:
             self._tesseract = pytesseract
         except ImportError:
             pass
+        self.show_rois = True
+        self._frame_boxes: dict[str, tuple[int, int, int, int]] = {}
+        self.last_scores: dict[str, float] = {}
         self._last_ocr = 0.0
         self._last_values: dict[str, int | float | None] = {}
 
@@ -108,12 +112,16 @@ class VisionEngine:
 
     def _detections(self, packet: FramePacket) -> dict[str, Detection]:
         found: dict[str, Detection] = {}
+        scores: dict[str, float] = {}
+        self._frame_boxes: dict[str, tuple[int, int, int, int]] = {}
         for name, template in self.templates.items():
             image, offset = self._region_image(name, packet)
             match = self._match(image, template)
             if match is None:
                 continue
             score, (x, y) = match
+            scores[name] = score
+            self._frame_boxes[name] = (x + offset[0], y + offset[1], template.shape[1], template.shape[0])
             if score >= float(self.config.thresholds.get(name, 0.86)):
                 height, width = template.shape[:2]
                 found[name] = Detection(
@@ -138,6 +146,7 @@ class VisionEngine:
             if candidates:
                 x, y, width, height = max(candidates, key=lambda box: box[2] * box[3])
                 found[name] = Detection(1.0, (x + offset[0], y + offset[1], width, height))
+        self.last_scores = scores
         return found
 
     def _read_ocr(self, packet: FramePacket) -> dict[str, int | float | None]:
@@ -174,27 +183,33 @@ class VisionEngine:
     def process(self, packet: FramePacket) -> tuple[VisionObservation, np.ndarray, np.ndarray]:
         detections = self._detections(packet)
         values = self._read_ocr(packet)
-        observation = VisionObservation(packet.timestamp, detections, values)
+        observation = VisionObservation(packet.timestamp, detections, values, dict(self.last_scores))
         annotated = packet.image.copy()
-        for name, detection in detections.items():
-            x, y, width, height = detection.bbox
-            cv2.rectangle(annotated, (x, y), (x + width, y + height), (70, 220, 100), 2)
-            cv2.putText(
-                annotated,
-                f"{name} {detection.confidence:.2f}",
-                (x, max(18, y - 5)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (70, 220, 100),
-                1,
-                cv2.LINE_AA,
-            )
-        for name, bounds in self.roi_bounds.items():
-            x, y = int(bounds.get("x", 0)), int(bounds.get("y", 0))
-            width, height = int(bounds.get("w", 0)), int(bounds.get("h", 0))
-            if width > 0 and height > 0:
-                cv2.rectangle(annotated, (x, y), (x + width, y + height), (235, 170, 55), 1)
-                cv2.putText(annotated, name, (x, max(15, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (235, 170, 55), 1)
+        if self.show_rois:
+            for name, bounds in self.roi_bounds.items():
+                x, y = int(bounds.get("x", 0)), int(bounds.get("y", 0))
+                width, height = int(bounds.get("w", 0)), int(bounds.get("h", 0))
+                if width > 0 and height > 0:
+                    cv2.rectangle(annotated, (x, y), (x + width, y + height), (235, 170, 55), 1)
+                    cv2.putText(annotated, name, (x, max(15, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (235, 170, 55), 1)
+            for name, score in {**{n: d.confidence for n, d in detections.items()}, **self.last_scores}.items():
+                hit = name in detections
+                box = detections[name].bbox if hit else self._frame_boxes.get(name)
+                if box is None or (not hit and score < 0.5):
+                    continue
+                x, y, width, height = box
+                color = (70, 220, 100) if hit else (60, 60, 230)
+                cv2.rectangle(annotated, (x, y), (x + width, y + height), color, 2)
+                cv2.putText(
+                    annotated,
+                    f"{name} Confidence: {score:.2f}",
+                    (x, max(18, y - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    color,
+                    1,
+                    cv2.LINE_AA,
+                )
         roi_preview = self._compose_roi_preview(packet.regions)
         return observation, annotated, roi_preview
 
@@ -244,7 +259,8 @@ class VisionWorker(threading.Thread):
                 _put_latest(self.observation_queue, observation)
                 _put_latest(
                     self.render_queue,
-                    {"image": annotated, "roi_preview": roi_preview, "timestamp": packet.timestamp},
+                    {"image": annotated, "roi_preview": roi_preview, "timestamp": packet.timestamp,
+                     "scores": observation.scores, "detected": sorted(observation.detections)},
                 )
             except Exception as exc:
                 if self.status_queue is not None:
