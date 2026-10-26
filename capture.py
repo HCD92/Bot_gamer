@@ -17,6 +17,7 @@ class CaptureConfig:
     fps: int = 30
     use_bettercam: bool = True
     regions: dict[str, dict[str, int]] = field(default_factory=dict)
+    resolution: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
