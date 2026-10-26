@@ -55,7 +55,7 @@ Segments hold W with the optional A/D steering key. These are fixed, map-specifi
 
 ## Controls And Safety
 
-- Start begins the buy, map-check, calibrated drive, verified delivery, return, and repeat cycle.
+- Start begins the buy, map-check, calibrated drive, verified delivery, return, and repeat cycle. **Run batch** runs the same cycle and stops after the selected number of verified deliveries (default 10); the batch progress is shown in the Deliveries counter.
 - Pause releases held inputs and enters a paused state; Resume continues the previous FSM state. Stop returns to idle.
 - F12 or Esc is a global emergency stop. It releases held keys and returns the FSM to idle. Esc is not sent by the agent.
 - Recovery attempts a short reverse/steer maneuver up to three times, then stops. A damage threshold, missing visual confirmation, missing calibrated route, or state timeout also prevents continued automation.

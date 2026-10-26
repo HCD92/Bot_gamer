@@ -82,6 +82,7 @@ class LogisticsAgent(threading.Thread):
         self._state_started = time.monotonic()
         self._loop_started: float | None = None
         self._deliveries = 0
+        self._delivery_target = config.max_deliveries
         self._action = "Standby"
         self._route_index = 0
         self._recovery_attempts = 0
@@ -115,6 +116,7 @@ class LogisticsAgent(threading.Thread):
                 "active_key": self.input.active_key,
                 "action": self._action,
                 "deliveries": self._deliveries,
+                "delivery_target": self._delivery_target,
                 "loop_seconds": round(now - self._loop_started, 1) if self._loop_started else 0.0,
                 "priority": self.priority,
             },
@@ -152,6 +154,10 @@ class LogisticsAgent(threading.Thread):
             if kind == "priority":
                 self.priority = str(command.get("value", self.priority))
             elif kind == "start" and self.state == State.IDLE:
+                self._deliveries = 0
+                self._delivery_target = max(
+                    0, int(command.get("deliveries", self.config.max_deliveries))
+                )
                 self.input.enable()
                 self._loop_started = time.monotonic()
                 self._route_index = 0
@@ -320,7 +326,7 @@ class LogisticsAgent(threading.Thread):
             self._prompt_gone_since = None
             self._route_index = 0
             self._loop_started = time.monotonic()
-            if self.config.max_deliveries > 0 and self._deliveries >= self.config.max_deliveries:
+            if self._delivery_target > 0 and self._deliveries >= self._delivery_target:
                 self.input.halt()
                 self._set_state(State.IDLE, "Delivery target reached")
             elif self.config.route_segments.get("to_hq"):
