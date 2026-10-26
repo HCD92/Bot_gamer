@@ -1,0 +1,345 @@
+"""Timeout-guarded logistics finite state machine."""
+
+from __future__ import annotations
+
+import queue
+import threading
+import time
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
+
+from capture import _put_latest
+from input_controller import InputController
+from vision import VisionObservation
+
+
+class State(str, Enum):
+    IDLE = "STATE_IDLE"
+    PAUSED = "STATE_PAUSED"
+    BUY_PALLET = "STATE_BUY_PALLET"
+    CHECK_MAP = "STATE_CHECK_MAP"
+    DRIVE_TO_FOB = "STATE_DRIVE_TO_FOB"
+    DELIVER = "STATE_DELIVER"
+    RETURN_HQ = "STATE_RETURN_HQ"
+    RECOVERY = "STATE_RECOVERY"
+
+
+@dataclass(frozen=True)
+class AgentConfig:
+    timeouts: dict[str, float]
+    signals: dict[str, str]
+    pallet_keys: dict[str, str]
+    route_segments: dict[str, list[dict[str, Any]]]
+    unload_seconds: float = 8.0
+    menu_settle_seconds: float = 0.35
+    map_settle_seconds: float = 0.8
+    recovery_reverse_seconds: float = 1.2
+    max_damage: float = 75.0
+    max_deliveries: int = 0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AgentConfig":
+        return cls(
+            timeouts={key: float(value) for key, value in data.get("timeouts", {}).items()},
+            signals=data.get("signals", {}),
+            pallet_keys=data.get("pallet_keys", {}),
+            route_segments=data.get("route_segments", {}),
+            unload_seconds=float(data.get("unload_seconds", 8.0)),
+            menu_settle_seconds=float(data.get("menu_settle_seconds", 0.35)),
+            map_settle_seconds=float(data.get("map_settle_seconds", 0.8)),
+            recovery_reverse_seconds=float(data.get("recovery_reverse_seconds", 1.2)),
+            max_damage=float(data.get("max_damage", 75.0)),
+            max_deliveries=int(data.get("max_deliveries", 0)),
+        )
+
+
+class LogisticsAgent(threading.Thread):
+    def __init__(
+        self,
+        config: AgentConfig,
+        input_controller: InputController,
+        commands: queue.Queue,
+        observations: queue.Queue,
+        telemetry: queue.Queue,
+        initial_priority: str = "Build",
+    ):
+        super().__init__(name="logistics-agent", daemon=True)
+        self.config = config
+        self.input = input_controller
+        self.commands = commands
+        self.observations = observations
+        self.telemetry = telemetry
+        self.priority = initial_priority
+        self.state = State.IDLE
+        self._resume_state = State.IDLE
+        self._stop_event = threading.Event()
+        self._last_observation: VisionObservation | None = None
+        self._state_started = time.monotonic()
+        self._loop_started: float | None = None
+        self._deliveries = 0
+        self._action = "Standby"
+        self._route_index = 0
+        self._recovery_attempts = 0
+        self._stock_before: int | float | None = None
+        self._unload_started = False
+        self._last_speed = None
+        self._zero_speed_since: float | None = None
+        self._recovery_stage = 0
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self.input.halt()
+
+    def emergency_stop(self) -> None:
+        self.input.halt()
+        self._set_state(State.IDLE, "Emergency stop")
+
+    def _set_state(self, state: State, action: str | None = None) -> None:
+        self.state = state
+        self._state_started = time.monotonic()
+        self._action = action or state.value.removeprefix("STATE_").replace("_", " ").title()
+        self._publish()
+
+    def _publish(self) -> None:
+        now = time.monotonic()
+        _put_latest(
+            self.telemetry,
+            {
+                "state": self.state.value,
+                "active_key": self.input.active_key,
+                "action": self._action,
+                "deliveries": self._deliveries,
+                "loop_seconds": round(now - self._loop_started, 1) if self._loop_started else 0.0,
+                "priority": self.priority,
+            },
+        )
+
+    def _signal(self, logical_name: str) -> str:
+        return self.config.signals.get(logical_name, logical_name)
+
+    def _detected(self, logical_name: str) -> bool:
+        return bool(self._last_observation and self._last_observation.detected(self._signal(logical_name)))
+
+    def _value(self, name: str) -> int | float | None:
+        if self._last_observation is None:
+            return None
+        return self._last_observation.values.get(name)
+
+    def _timeout(self) -> float:
+        return float(self.config.timeouts.get(self.state.value, 20.0))
+
+    def _expired(self) -> bool:
+        return time.monotonic() - self._state_started > self._timeout()
+
+    def _drain_inputs(self) -> None:
+        while True:
+            try:
+                self._last_observation = self.observations.get_nowait()
+            except queue.Empty:
+                break
+        while True:
+            try:
+                command = self.commands.get_nowait()
+            except queue.Empty:
+                break
+            kind = command.get("kind") if isinstance(command, dict) else command
+            if kind == "priority":
+                self.priority = str(command.get("value", self.priority))
+            elif kind == "start" and self.state == State.IDLE:
+                self.input.enable()
+                self._loop_started = time.monotonic()
+                self._route_index = 0
+                self._set_state(State.BUY_PALLET)
+            elif kind == "pause" and self.state not in (State.IDLE, State.PAUSED):
+                self._resume_state = self.state
+                self.input.halt()
+                self._set_state(State.PAUSED, "Paused")
+            elif kind == "resume" and self.state == State.PAUSED:
+                self.input.enable()
+                self._set_state(self._resume_state)
+            elif kind in ("stop", "emergency"):
+                self.emergency_stop()
+
+    def _fail_to_recovery(self, reason: str) -> None:
+        self.input.release_all()
+        self._recovery_stage = 0
+        self._set_state(State.RECOVERY, reason)
+
+    def _check_vehicle(self) -> bool:
+        damage = self._value("vehicle_damage")
+        if damage is not None and damage >= self.config.max_damage:
+            self._fail_to_recovery("Damage limit reached")
+            return False
+        speed = self._value("speed")
+        if self.state == State.DRIVE_TO_FOB and speed is not None and speed <= 0:
+            if self._zero_speed_since is None:
+                self._zero_speed_since = time.monotonic()
+            elif time.monotonic() - self._zero_speed_since > 8.0:
+                self._fail_to_recovery("No movement detected")
+                return False
+        else:
+            self._zero_speed_since = None
+        return True
+
+    def _buy_pallet(self) -> None:
+        self._action = "Opening pallet menu"
+        if not self.input.press("B", 0.12):
+            return
+        deadline = time.monotonic() + self.config.menu_settle_seconds
+        while time.monotonic() < deadline and not self._stop_event.is_set() and not self.input.halted:
+            self._drain_observations_only()
+            if self._detected("pallet_menu_open"):
+                break
+            time.sleep(0.05)
+        if not self._detected("pallet_menu_open"):
+            self._fail_to_recovery("Pallet menu not verified")
+            return
+        key = self.config.pallet_keys.get(self.priority.lower())
+        if not key:
+            self._fail_to_recovery(f"No menu key configured for {self.priority}")
+            return
+        if not self.input.press(key, 0.12) or not self.input.press("ENTER", 0.12):
+            return
+        self.input.press("B", 0.1)
+        self._route_index = 0
+        self._set_state(State.CHECK_MAP)
+
+    def _drain_observations_only(self) -> None:
+        while True:
+            try:
+                self._last_observation = self.observations.get_nowait()
+            except queue.Empty:
+                break
+
+    def _check_map(self) -> None:
+        self._action = "Checking friendly FOB status"
+        if not self.input.press("M", 0.12):
+            return
+        deadline = time.monotonic() + self.config.map_settle_seconds
+        while time.monotonic() < deadline and not self._stop_event.is_set() and not self.input.halted:
+            self._drain_observations_only()
+            time.sleep(0.05)
+        self.input.press("M", 0.12)
+        if not self._detected("friendly_fob"):
+            self._fail_to_recovery("Friendly FOB not detected on map")
+            return
+        if not self.config.route_segments.get("to_fob"):
+            self._fail_to_recovery("Configure route_segments.to_fob before driving")
+            return
+        self._route_index = 0
+        self._set_state(State.DRIVE_TO_FOB)
+
+    def _drive(self, route_name: str, next_state: State) -> None:
+        segments = self.config.route_segments.get(route_name, [])
+        if not segments:
+            self._fail_to_recovery(f"Configure route_segments.{route_name}")
+            return
+        if self._route_index >= len(segments):
+            self._set_state(next_state)
+            return
+        destination_signal = "delivery_zone" if route_name == "to_fob" else "hq_zone"
+        if self._detected(destination_signal):
+            if route_name == "to_fob":
+                self._stock_before = self._value("fob_stock")
+            self._set_state(next_state)
+            return
+        segment = segments[self._route_index]
+        steer = str(segment.get("steer", "")).upper()
+        keys = ["W"]
+        if steer in ("A", "D"):
+            keys.append(steer)
+        duration = min(8.0, max(0.15, float(segment.get("seconds", 1.0))))
+        self._action = f"Driving {route_name} segment {self._route_index + 1}/{len(segments)}"
+        if self.input.hold_keys(keys, duration):
+            self._route_index += 1
+            if self._route_index >= len(segments) and not self._detected(destination_signal):
+                self._fail_to_recovery(f"{destination_signal} not verified at end of route")
+                return
+        if self._expired():
+            self._fail_to_recovery(f"{route_name} route timed out")
+
+    def _deliver(self) -> None:
+        if not self._detected("delivery_zone"):
+            self._fail_to_recovery("Delivery zone signal lost")
+            return
+        if not self._unload_started:
+            self._action = "Dropping pallet"
+            if not self.input.press("G", 0.10):
+                return
+            self._action = "Unloading pallet"
+            if not self.input.hold("F", self.config.unload_seconds):
+                return
+            self._unload_started = True
+            return
+        complete = self._detected("unload_complete")
+        stock_after = self._value("fob_stock")
+        stock_updated = (
+            self._stock_before is not None
+            and stock_after is not None
+            and stock_after > self._stock_before
+        )
+        if complete and stock_updated:
+            self._deliveries += 1
+            self._recovery_attempts = 0
+            self._unload_started = False
+            self._route_index = 0
+            self._loop_started = time.monotonic()
+            if self.config.max_deliveries > 0 and self._deliveries >= self.config.max_deliveries:
+                self.input.halt()
+                self._set_state(State.IDLE, "Delivery target reached")
+            elif self.config.route_segments.get("to_hq"):
+                self._set_state(State.RETURN_HQ)
+            else:
+                self._set_state(State.BUY_PALLET)
+        elif self._expired():
+            self._fail_to_recovery("Unload or FOB stock update not verified")
+
+    def _recover(self) -> None:
+        if self._recovery_stage == 0:
+            if self._recovery_attempts >= 3:
+                self.input.halt()
+                self._set_state(State.IDLE, "Recovery limit reached; stopped")
+                return
+            self._recovery_attempts += 1
+            self._action = f"Recovery reverse ({self._recovery_attempts}/3)"
+            if self.input.hold_keys(("S", "A" if self._recovery_attempts % 2 else "D"), self.config.recovery_reverse_seconds):
+                self._recovery_stage = 1
+        elif self._recovery_stage == 1:
+            self._action = "Recovery pause"
+            self.input.press("SPACE", 0.25)
+            self._recovery_stage = 2
+        else:
+            self._route_index = 0
+            if self._last_observation and self._detected("delivery_zone"):
+                self._set_state(State.DELIVER)
+            elif self.config.route_segments.get("to_fob"):
+                self._set_state(State.DRIVE_TO_FOB)
+            else:
+                self.input.halt()
+                self._set_state(State.IDLE, "No calibrated route; stopped")
+
+    def run(self) -> None:
+        self._publish()
+        while not self._stop_event.is_set():
+            self._drain_inputs()
+            if self._last_observation and not self._check_vehicle():
+                self._publish()
+                continue
+            if self.state == State.BUY_PALLET:
+                self._buy_pallet()
+            elif self.state == State.CHECK_MAP:
+                self._check_map()
+            elif self.state == State.DRIVE_TO_FOB:
+                self._drive("to_fob", State.DELIVER)
+            elif self.state == State.DELIVER:
+                self._deliver()
+            elif self.state == State.RETURN_HQ:
+                self._drive("to_hq", State.BUY_PALLET)
+            elif self.state == State.RECOVERY:
+                self._recover()
+            if self.state not in (State.IDLE, State.PAUSED) and self._expired():
+                self._fail_to_recovery(f"{self.state.value.removeprefix('STATE_')} timed out")
+            self._publish()
+            time.sleep(0.05)
+        self.input.halt()

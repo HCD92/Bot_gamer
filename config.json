@@ -1,0 +1,76 @@
+{
+  "input": {
+    "hold_noise": 0.08,
+    "delay_noise": 0.18
+  },
+  "capture": {
+    "monitor": 1,
+    "fps": 30,
+    "use_bettercam": true,
+    "regions": {
+      "minimap": {"x": 20, "y": 700, "w": 360, "h": 360},
+      "tactical_map": {"x": 0, "y": 0, "w": 1920, "h": 1080},
+      "fob_hud": {"x": 20, "y": 500, "w": 420, "h": 150},
+      "pallet_menu": {"x": 500, "y": 250, "w": 920, "h": 650},
+      "speedometer": {"x": 1450, "y": 800, "w": 440, "h": 240},
+      "damage": {"x": 1550, "y": 700, "w": 340, "h": 140},
+      "unload_bar": {"x": 650, "y": 850, "w": 620, "h": 120}
+    }
+  },
+  "vision": {
+    "template_dir": "assets/templates",
+    "thresholds": {
+      "pallet_menu_open": 0.86,
+      "delivery_zone": 0.84,
+      "unload_complete": 0.86,
+      "friendly_fob": 0.82
+    },
+    "template_regions": {
+      "pallet_menu_open": "pallet_menu",
+      "delivery_zone": "fob_hud",
+      "unload_complete": "unload_bar",
+      "friendly_fob": "tactical_map"
+    },
+    "ocr_regions": {
+      "fob_stock": "fob_hud",
+      "speed": "speedometer",
+      "vehicle_damage": "damage"
+    },
+    "ocr_interval": 0.75,
+    "color_ranges": {}
+  },
+  "agent": {
+    "initial_priority": "Build",
+    "timeouts": {
+      "STATE_BUY_PALLET": 25,
+      "STATE_CHECK_MAP": 15,
+      "STATE_DRIVE_TO_FOB": 180,
+      "STATE_DELIVER": 35,
+      "STATE_RETURN_HQ": 180,
+      "STATE_RECOVERY": 15
+    },
+    "signals": {
+      "pallet_menu_open": "pallet_menu_open",
+      "delivery_zone": "delivery_zone",
+      "unload_complete": "unload_complete",
+      "friendly_fob": "friendly_fob",
+      "hq_zone": "hq_zone"
+    },
+    "pallet_keys": {
+      "build": "1",
+      "ammo": "2",
+      "fuel": "3",
+      "mechanical": "4"
+    },
+    "route_segments": {
+      "to_fob": [],
+      "to_hq": []
+    },
+    "unload_seconds": 8,
+    "menu_settle_seconds": 5,
+    "map_settle_seconds": 1.2,
+    "recovery_reverse_seconds": 1.2,
+    "max_damage": 75,
+    "max_deliveries": 0
+  }
+}
