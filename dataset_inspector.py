@@ -67,7 +67,8 @@ def count_recovery_transitions(headings: list[float]) -> int:
 
 
 def analyze_dataset(dataset_dir: str | Path = "dataset") -> dict:
-    files = sorted(Path(dataset_dir).glob("session_*/telemetry.csv"))
+    root = Path(dataset_dir)
+    files = sorted(root.glob("session_*/telemetry.csv")) + sorted(root.glob("*/*/telemetry.csv"))
     counts = {"straight": 0, "left": 0, "right": 0}
     total = idle = 0
     headings_all: list[float] = []

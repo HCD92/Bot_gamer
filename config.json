@@ -183,6 +183,21 @@
       }
     },
     "close_menu_with_escape": false,
-    "prompt_clear_seconds": 1.5
+    "prompt_clear_seconds": 1.5,
+    "active_map": "Bakurani"
+  },
+  "routes": {
+    "Bakurani": {
+      "to_fob": [],
+      "to_hq": []
+    },
+    "Ozeti": {
+      "to_fob": [],
+      "to_hq": []
+    },
+    "Zestafona": {
+      "to_fob": [],
+      "to_hq": []
+    }
   }
 }

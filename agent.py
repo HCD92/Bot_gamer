@@ -266,11 +266,14 @@ class LogisticsAgent(threading.Thread):
             return
         try:
             with open(path, encoding="utf-8") as handle:
-                routes = json.load(handle).get("agent", {}).get("route_segments", {})
+                data = json.load(handle)
         except (OSError, ValueError):
             return
+        legacy = data.get("agent", {}).get("route_segments", {})
+        active_map = data.get("agent", {}).get("active_map", "")
+        scoped = data.get("routes", {}).get(active_map, {})
         self._routes = {
-            name: routes.get(name) or [] for name in ("to_fob", "to_hq")
+            name: scoped.get(name) or legacy.get(name) or [] for name in ("to_fob", "to_hq")
         }
 
     def _routes_have(self, route_name: str) -> bool:
