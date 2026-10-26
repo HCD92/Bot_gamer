@@ -96,7 +96,7 @@ class RouteRecorder:
         self.recording = False
         self.segments: list[dict[str, Any]] = []
         self.stats: dict[str, Any] = {}
-        self.message = "Idle. F8 start, F9 stop, Esc abort."
+        self.message = "Idle. F8 start, F9 stop, F10 discard."
         self._keyboard = None
         self._handles: list[Any] = []
         self.logger = DatasetLogger()
@@ -203,7 +203,7 @@ class RouteRecorder:
                 ),
                 keyboard.add_hotkey("f8", self.start, suppress=False),
                 keyboard.add_hotkey("f9", self.stop, suppress=False),
-                keyboard.add_hotkey("esc", self.abort, suppress=False),
+                keyboard.add_hotkey("f10", self.abort, suppress=False),
             ]
         except Exception as exc:
             self.message = f"Recorder hotkeys unavailable: {exc}"

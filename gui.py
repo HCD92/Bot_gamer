@@ -274,7 +274,7 @@ class ControlPanel(QMainWindow):
         self.rec_status = QLabel(self.recorder.message)
         self.rec_status.setStyleSheet("font-weight: bold;")
         layout.addWidget(QLabel(
-            "Global hotkeys: F8 start, F9 stop, Esc abort. Tracks W/S/A/D/Space; "
+            "Global hotkeys: F8 start, F9 stop, F10 discard. Tracks W/S/A/D/Space; "
             "steering is saved, W is held automatically by the agent."
         ))
         layout.addWidget(self.rec_status)
@@ -285,7 +285,7 @@ class ControlPanel(QMainWindow):
         controls = QHBoxLayout()
         self.rec_start = QPushButton("Start (F8)")
         self.rec_stop = QPushButton("Stop (F9)")
-        self.rec_discard = QPushButton("Discard (Esc)")
+        self.rec_discard = QPushButton("Discard (F10)")
         self.rec_start.clicked.connect(self.recorder.start)
         self.rec_stop.clicked.connect(self.recorder.stop)
         self.rec_discard.clicked.connect(self.recorder.abort)
@@ -509,7 +509,7 @@ class ControlPanel(QMainWindow):
         for combo in (self.map_combo, self.faction_combo, self.direction_combo):
             combo.setEnabled(not recording)
         if recording:
-            self.rec_status.setText("● RECORDING (F9 stop, Esc abort)")
+            self.rec_status.setText("● RECORDING (F9 stop, F10 discard)")
             self.rec_status.setStyleSheet("font-weight: bold; color: #e53935;")
         elif self._rec_was_recording:
             self.rec_status.setText(self.recorder.message)
