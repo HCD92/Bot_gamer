@@ -55,7 +55,7 @@ The default `agent.route_segments.to_fob` and `to_hq` are empty, so Start will e
 }
 ```
 
-Segments hold W with the optional A/D steering key. These are fixed, map-specific steering instructions, not autonomous road or waypoint recognition. Keep segments short and conservative. The agent still requires `delivery_zone` or `hq_zone` visual confirmation before transitioning; a route that ends without its destination marker enters recovery. Set `pallet_keys` to the actual menu controls for each supply type and confirm the menu behavior manually.
+Segments hold W with the optional A/D steering key. These are fixed, map-specific steering instructions, not autonomous road or waypoint recognition. Keep segments short and conservative. The agent still requires `delivery_zone` or `hq_zone` visual confirmation before transitioning; a route that ends without its destination marker enters recovery. Pallet selection uses the configured `agent.menu_clicks` screen coordinates; confirm those coordinates and menu behavior manually. Per-supply `pallet_keys` are not currently implemented.
 
 ## Controls And Safety
 
@@ -75,6 +75,13 @@ Segments hold W with the optional A/D steering key. These are fixed, map-specifi
 6. **Recovery:** test with an empty route or missing template first. The expected result is recovery/idle without an unverified drive or delivery.
 
 The automated keys are global input. Keep a hand on the physical keyboard and use F12/Esc or Stop if the game state diverges from the preview.
+
+## Live Dashboard
+
+The Live Bot Control tab presents the live capture with ROI/template overlays, OCR-backed speed and damage readouts, telemetry, detector/safety status, route editing, batch progress, and an event terminal sourced from worker status, telemetry, OCR, and template matches. The route editors update `routes.<map>.to_fob` and `routes.<map>.to_hq`; empty calibrated routes still prevent the agent from driving. `assets/ui/` contains the dashboard concept crops and visual references; the application renders its changing data and controls with native Qt widgets.
+
+Pallet selection currently uses `agent.menu_clicks` screen coordinates, not per-supply keyboard shortcuts. The dashboard shows the actual fixed input sequence and marks per-cue audio settings as unavailable because the current backend has no corresponding configuration.
+
 ## Dataset Recording And Neural Net Training
 
 - **Route Recorder tab**: F8 starts, F9 stops, F10 discards (Esc no longer discards, so opening game menus cannot delete a recording). With "Record Synchronized Training Frames" enabled, a 5 Hz sampler writes `dataset/<map>/<session_id>/frames/frame_######.jpg` (640x360, Q85), `minimap/minimap_######.png` (256x256) and `telemetry.csv` (`frame_file,minimap_file,timestamp,map_name,faction,w,s,a,d,space,steer_label`; 0=STRAIGHT, 1=LEFT, 2=RIGHT, 3=BRAKE) through a bounded `queue.Queue(150)` and a background writer thread.
