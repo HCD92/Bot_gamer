@@ -291,6 +291,11 @@ class ControlPanel(QMainWindow):
             telemetry_layout.addWidget(title_label, index // 3 * 2, index % 3)
             telemetry_layout.addWidget(value, index // 3 * 2 + 1, index % 3)
         telemetry_layout.addWidget(self.telemetry_progress, 4, 0, 1, 3)
+        telemetry_note = QLabel(
+            "Brake telemetry is not exposed by the backend; emergency Space-pulse status is shown when active."
+        )
+        telemetry_note.setStyleSheet("color: #ffc247; font-size: 10px;")
+        telemetry_layout.addWidget(telemetry_note, 5, 0, 1, 3)
         info_row.addWidget(telemetry_box, 3)
 
         detection_column = QVBoxLayout()
@@ -711,13 +716,13 @@ class ControlPanel(QMainWindow):
         halted = getattr(self.input_controller, "halted", None)
         pulsing = getattr(self.input_controller, "_pulsing_handbrake", False)
         if pulsing:
-            self.handbrake_label.setText("SPACE BRAKE ACTIVE")
+            self.handbrake_label.setText("EMERGENCY SPACE PULSE ACTIVE")
             self.handbrake_label.setStyleSheet("color: #ff5964; font-weight: 700;")
         elif halted is True:
-            self.handbrake_label.setText("INPUT HALTED")
+            self.handbrake_label.setText("INPUT HALTED · BRAKE UNKNOWN")
             self.handbrake_label.setStyleSheet("color: #54f28b; font-weight: 700;")
         elif halted is False:
-            self.handbrake_label.setText("RELEASED · AGENT ACTIVE")
+            self.handbrake_label.setText("INPUT ENABLED · BRAKE UNKNOWN")
             self.handbrake_label.setStyleSheet("color: #ffc247; font-weight: 700;")
         else:
             self.handbrake_label.setText("BACKEND UNAVAILABLE")
