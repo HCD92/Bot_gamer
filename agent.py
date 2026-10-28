@@ -13,6 +13,7 @@ from typing import Any
 import audio
 from capture import _put_latest
 from input_controller import InputController
+from safety_supervisor import SafetyContext, SafetyDecision, SafetyResult, SafetySupervisor
 from vision import VisionObservation
 
 
@@ -75,6 +76,9 @@ class LogisticsAgent(threading.Thread):
         super().__init__(name="logistics-agent", daemon=True)
         self.config = config
         self.input = input_controller
+        self.safety = SafetySupervisor()
+        self._last_safety_result = SafetyResult(SafetyDecision.STOP, "No input request evaluated")
+        self.input.set_safety_gate(self._authorize_input)
         self.commands = commands
         self.observations = observations
         self.telemetry = telemetry
@@ -113,8 +117,39 @@ class LogisticsAgent(threading.Thread):
         self.input.halt()
 
     def emergency_stop(self) -> None:
+        self.safety.latch_emergency_stop()
         self.input.halt()
         self._set_state(State.IDLE, "Emergency stop")
+
+    def _authorize_input(self, action: str, keys: tuple[str, ...]) -> SafetyResult:
+        observation = self._last_observation
+        route_name = "to_fob" if self.state == State.DRIVE_TO_FOB else "to_hq"
+        route_available = (
+            self.policy is not None or bool(self._routes.get(route_name))
+            if self.state in (State.DRIVE_TO_FOB, State.RETURN_HQ)
+            else True
+        )
+        timeout = self._timeout()
+        context = SafetyContext(
+            fsm_state=self.state.value,
+            capture_timestamp=observation.timestamp if observation else None,
+            state_elapsed_seconds=time.monotonic() - self._state_started,
+            state_timeout_seconds=timeout,
+            route_available=route_available,
+            vehicle_speed=(
+                float(observation.values["speed"])
+                if observation and observation.values.get("speed") is not None
+                else None
+            ),
+            vehicle_damage=(
+                float(observation.values["vehicle_damage"])
+                if observation and observation.values.get("vehicle_damage") is not None
+                else None
+            ),
+            max_damage=self.config.max_damage,
+        )
+        self._last_safety_result = self.safety.evaluate(context, action, keys)
+        return self._last_safety_result
 
     def _set_state(self, state: State, action: str | None = None) -> None:
         self.state = state
@@ -134,6 +169,8 @@ class LogisticsAgent(threading.Thread):
                 "delivery_target": self._delivery_target,
                 "loop_seconds": round(now - self._loop_started, 1) if self._loop_started else 0.0,
                 "priority": self.priority,
+                "safety_decision": self._last_safety_result.decision.value,
+                "safety_reason": self._last_safety_result.reason,
             },
         )
 
