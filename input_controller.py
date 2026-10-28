@@ -7,7 +7,7 @@ import os
 import random
 import threading
 import time
-from typing import Iterable
+from typing import Callable, Iterable
 
 
 KEYEVENTF_SCANCODE = 0x0008
@@ -112,6 +112,7 @@ class InputController:
         self._lock = threading.RLock()
         self._hold_noise = max(0.0, hold_noise)
         self._delay_noise = max(0.0, delay_noise)
+        self._safety_gate: Callable[[str, tuple[str, ...]], object] | None = None
         self.active_key = "--"
         self._pulsing_handbrake = False
 
@@ -122,6 +123,27 @@ class InputController:
     def enable(self) -> None:
         self.release_all()
         self._halted.clear()
+
+    def set_safety_gate(
+        self,
+        gate: Callable[[str, tuple[str, ...]], object] | None,
+    ) -> None:
+        self._safety_gate = gate
+
+    def _authorize(self, action: str, keys: tuple[str, ...] = ()) -> bool:
+        gate = self._safety_gate
+        if gate is None:
+            return False
+        try:
+            result = gate(action, keys)
+            decision = getattr(result, "decision", result)
+            allowed = getattr(decision, "value", decision) == "ALLOW"
+        except Exception:
+            self.halt()
+            raise
+        if not allowed:
+            self.halt()
+        return allowed
 
     def halt(self) -> None:
         self._halted.set()
@@ -166,6 +188,8 @@ class InputController:
         normalized = key.upper()
         if normalized not in SCANCODES:
             raise ValueError(f"Unsupported key: {key}")
+        if not key_up and not force and not self._authorize("key", (normalized,)):
+            return False
         flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if key_up else 0)
         event = _INPUT(type=1, ki=_KEYBDINPUT(0, SCANCODES[normalized], flags, 0, 0))
         if not self._send(event, force):
@@ -197,6 +221,8 @@ class InputController:
         deadline = time.monotonic() + self._duration(max(0.025, hold_seconds))
         try:
             while not self._halted.is_set():
+                if not self._authorize("key", (normalized,)):
+                    return False
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -214,6 +240,8 @@ class InputController:
         normalized = tuple(key.upper() for key in keys)
         if not normalized or self._halted.is_set():
             return False
+        if not self._authorize("hold_keys", normalized):
+            return False
         self.active_key = "+".join(normalized)
         pressed: list[str] = []
         try:
@@ -223,6 +251,8 @@ class InputController:
                 pressed.append(key)
             deadline = time.monotonic() + self._duration(max(0.025, seconds))
             while not self._halted.is_set():
+                if not self._authorize("hold_keys", normalized):
+                    return False
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -250,6 +280,8 @@ class InputController:
         """Move relatively along a cubic curve with small endpoint-safe jitter."""
         if self._halted.is_set():
             return False
+        if not self._authorize("move_mouse", ()):
+            return False
         steps = max(4, steps)
         control_1 = (dx * 0.28, dy * 0.05)
         control_2 = (dx * 0.72, dy * 0.95)
@@ -258,6 +290,8 @@ class InputController:
         try:
             for index in range(1, steps + 1):
                 if self._halted.is_set():
+                    return False
+                if not self._authorize("move_mouse", ()):
                     return False
                 t = index / steps
                 inverse = 1.0 - t
@@ -289,6 +323,8 @@ class InputController:
     def click_at(self, x: int, y: int, hold_seconds: float = 0.08) -> bool:
         """Left-click at absolute virtual-desktop pixel coordinates (DPI-aware process)."""
         if self._halted.is_set():
+            return False
+        if not self._authorize("click", ()):
             return False
         width = self._user32.GetSystemMetrics(78) or 1
         height = self._user32.GetSystemMetrics(79) or 1

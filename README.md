@@ -63,6 +63,8 @@ Segments hold W with the optional A/D steering key. These are fixed, map-specifi
 - Pause releases held inputs and enters a paused state; Resume continues the previous FSM state. Stop returns to idle.
 - F12 or Esc is a global emergency stop. It releases held keys and returns the FSM to idle. Esc is not sent by the agent.
 - Recovery attempts a short reverse/steer maneuver up to three times, then stops. A damage threshold, missing visual confirmation, missing calibrated route, or state timeout also prevents continued automation.
+- The Safety Supervisor gates injected input. It stops and releases input when capture is missing or stale, the FSM state or timeout is invalid, damage telemetry is unavailable or over the limit, or driving lacks a route or speed telemetry. Recovery input is limited to its controlled reverse/steer and brake keys. A denied request halts further synthesis; restart the application to clear a latched emergency stop.
+- Game-window focus protection and the controller heartbeat watchdog are planned follow-up stages and are not yet enforced by this increment. Keep the game foregrounded and maintain a hand on the physical emergency controls.
 - The bot does not bypass game protections, modify game files, or access game memory. Use only where desktop automation is permitted.
 
 ## Test Sequences
