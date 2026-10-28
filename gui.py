@@ -15,7 +15,15 @@ import audio
 from capture import get_available_monitors, get_open_windows
 from dataset_inspector import MIN_SAMPLES, get_readiness_report
 from train_model import DATASET_DIR, MODELS_DIR, TrainingThread, TrainParams, describe_device
-from recorder import DIRECTIONS, FACTIONS, MAPS, RouteRecorder, assign_route, update_config
+from recorder import (
+    DIRECTIONS,
+    FACTIONS,
+    MAPS,
+    RouteRecorder,
+    assign_round_trip,
+    assign_route,
+    update_config,
+)
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -823,7 +831,7 @@ class ControlPanel(QMainWindow):
         self.rec_status = QLabel(self.recorder.message)
         self.rec_status.setStyleSheet("font-weight: bold;")
         layout.addWidget(QLabel(
-            "Global hotkeys: F8 start, F9 stop, F10 discard. Tracks W/S/A/D/Space; "
+            "Global hotkeys: F8 start, F9 stop, F10 discard, F11 mark turnaround. Tracks W/S/A/D/Space; "
             "steering is saved, W is held automatically by the agent."
         ))
         layout.addWidget(self.rec_status)
@@ -835,10 +843,12 @@ class ControlPanel(QMainWindow):
         self.rec_start = QPushButton("Start (F8)")
         self.rec_stop = QPushButton("Stop (F9)")
         self.rec_discard = QPushButton("Discard (F10)")
+        self.rec_turnaround = QPushButton("Mark Turnaround (F11)")
         self.rec_start.clicked.connect(self.recorder.start)
         self.rec_stop.clicked.connect(self.recorder.stop)
         self.rec_discard.clicked.connect(self.recorder.abort)
-        for button in (self.rec_start, self.rec_stop, self.rec_discard):
+        self.rec_turnaround.clicked.connect(self.recorder.mark_turnaround)
+        for button in (self.rec_start, self.rec_stop, self.rec_discard, self.rec_turnaround):
             controls.addWidget(button)
         layout.addLayout(controls)
         selectors = QHBoxLayout()
@@ -859,10 +869,13 @@ class ControlPanel(QMainWindow):
         buttons = QHBoxLayout()
         self.assign_fob = QPushButton("Assign to TO_FOB Route")
         self.assign_hq = QPushButton("Assign to TO_HQ Route")
+        self.assign_round_trip_button = QPushButton("Assign Round Trip")
         self.assign_fob.clicked.connect(lambda: self._assign("to_fob"))
         self.assign_hq.clicked.connect(lambda: self._assign("to_hq"))
+        self.assign_round_trip_button.clicked.connect(self._assign_round_trip)
         buttons.addWidget(self.assign_fob)
         buttons.addWidget(self.assign_hq)
+        buttons.addWidget(self.assign_round_trip_button)
         layout.addLayout(buttons)
         card = QGroupBox("Dataset Readiness")
         card_layout = QVBoxLayout(card)
@@ -1061,6 +1074,34 @@ class ControlPanel(QMainWindow):
         self._load_route_editors()
         self.rec_status.setText(f"Saved {len(self.recorder.segments)} segments to {self.map_combo.currentText()}/{route_name}")
 
+    def _assign_round_trip(self) -> None:
+        if self.config_path is None:
+            QMessageBox.warning(self, "Route Recorder", "No config file available.")
+            return
+        if self.recorder.round_trip_segments is None:
+            QMessageBox.warning(self, "Route Recorder", "Mark the turnaround during recording first.")
+            return
+        outbound, returning = self.recorder.round_trip_segments
+        first_route = self.direction_combo.currentText().lower()
+        try:
+            assign_round_trip(
+                self.config_path,
+                first_route,
+                outbound,
+                returning,
+                self.map_combo.currentText(),
+            )
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Route Recorder", str(exc))
+            return
+        self._ui_config = self._load_config_data()
+        self._load_route_editors()
+        second_route = "to_hq" if first_route == "to_fob" else "to_fob"
+        self.rec_status.setText(
+            f"Saved round trip: {first_route} ({len(outbound)}) then "
+            f"{second_route} ({len(returning)}) on {self.map_combo.currentText()}"
+        )
+
     def _refresh_recorder(self) -> None:
         recording = self.recorder.recording
         self.recorder.map_name = self.map_combo.currentText()
@@ -1069,22 +1110,35 @@ class ControlPanel(QMainWindow):
         for combo in (self.map_combo, self.faction_combo, self.direction_combo):
             combo.setEnabled(not recording)
         if recording:
-            self.rec_status.setText("● RECORDING (F9 stop, F10 discard)")
+            marker_status = " · TURNAROUND MARKED" if self.recorder.turnaround_time is not None else ""
+            self.rec_status.setText(f"● RECORDING (F9 stop, F10 discard, F11 turnaround){marker_status}")
             self.rec_status.setStyleSheet("font-weight: bold; color: #e53935;")
         elif self._rec_was_recording:
             self.rec_status.setText(self.recorder.message)
             self.rec_status.setStyleSheet("font-weight: bold;")
-            self.rec_preview.setPlainText(json.dumps(self.recorder.segments, indent=2))
+            if self.recorder.round_trip_segments is None:
+                preview = self.recorder.segments
+            else:
+                outbound, returning = self.recorder.round_trip_segments
+                first_route = self.direction_combo.currentText().lower()
+                second_route = "to_hq" if first_route == "to_fob" else "to_fob"
+                preview = {first_route: outbound, second_route: returning}
+            self.rec_preview.setPlainText(json.dumps(preview, indent=2))
         self._rec_was_recording = recording
         self.rec_start.setEnabled(not recording)
         self.rec_stop.setEnabled(recording)
         self.rec_discard.setEnabled(recording)
+        self.rec_turnaround.setEnabled(recording and self.recorder.turnaround_time is None)
         now = time.monotonic()
         if now - self._last_analysis > (2.0 if recording else 10.0):
             self._last_analysis = now
             self._analyze_dataset()
         self.assign_fob.setEnabled(not recording and bool(self.recorder.segments))
         self.assign_hq.setEnabled(not recording and bool(self.recorder.segments))
+        round_trip = self.recorder.round_trip_segments
+        self.assign_round_trip_button.setEnabled(
+            not recording and round_trip is not None and bool(round_trip[0]) and bool(round_trip[1])
+        )
 
     def _toggle_pause(self) -> None:
         if self._paused:

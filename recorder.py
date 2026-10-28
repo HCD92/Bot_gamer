@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 import audio
-from dataset_logger import DatasetLogger
 
 MAPS = ("Bakurani", "Ozeti", "Zestafona")
 FACTIONS = ("Manticore", "Valkyra", "Lonestar")
@@ -82,10 +81,36 @@ def summarize(segments: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def split_round_trip(
+    steer_changes: list[tuple[float, str]],
+    end_time: float,
+    turnaround_time: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split steering changes into outbound and return route segments."""
+    if not steer_changes or not steer_changes[0][0] <= turnaround_time < end_time:
+        raise ValueError("Turnaround must be marked during the recording")
+
+    outbound_changes = [(stamp, steer) for stamp, steer in steer_changes if stamp < turnaround_time]
+    return_steer = steer_changes[0][1]
+    for stamp, steer in steer_changes:
+        if stamp > turnaround_time:
+            break
+        return_steer = steer
+    return_changes = [(turnaround_time, return_steer)] + [
+        (stamp, steer) for stamp, steer in steer_changes if stamp > turnaround_time
+    ]
+    return (
+        build_segments(outbound_changes, turnaround_time),
+        build_segments(return_changes, end_time),
+    )
+
+
 class RouteRecorder:
     """Thread-safe recorder; feed it key events or let ``install_hooks`` do so."""
 
     def __init__(self) -> None:
+        from dataset_logger import DatasetLogger
+
         self._lock = threading.Lock()
         self._down: set[str] = set()
         self._steer_order: list[str] = []
@@ -95,6 +120,8 @@ class RouteRecorder:
         self._held_totals: dict[str, float] = {}
         self.recording = False
         self.segments: list[dict[str, Any]] = []
+        self.round_trip_segments: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None
+        self.turnaround_time: float | None = None
         self.stats: dict[str, Any] = {}
         self.message = "Idle. F8 start, F9 stop, F10 discard."
         self._keyboard = None
@@ -131,6 +158,8 @@ class RouteRecorder:
             self._held_totals = {}
             self._changes = [(now, self._steer())]
             self.segments, self.stats = [], {}
+            self.round_trip_segments = None
+            self.turnaround_time = None
             self.recording = True
             self.message = "RECORDING..."
         if self.record_frames and self.logger.frame_source is not None:
@@ -148,13 +177,34 @@ class RouteRecorder:
             self.segments = build_segments(self._changes, now)
             self.stats = summarize(self.segments)
             self.stats["held_seconds"] = {k: round(v, 3) for k, v in self._held_totals.items()}
+            if self.turnaround_time is not None:
+                self.round_trip_segments = split_round_trip(
+                    self._changes, now, self.turnaround_time
+                )
+                self.stats["outbound"] = summarize(self.round_trip_segments[0])
+                self.stats["return"] = summarize(self.round_trip_segments[1])
             self.message = (
                 f"Stopped: {self.stats['total_seconds']:.2f}s, "
                 f"{self.stats['turns']} turns, {self.stats['segments']} segments"
             )
+            if self.round_trip_segments is not None:
+                outbound, returning = self.round_trip_segments
+                self.message += f" · Round trip: {len(outbound)} out / {len(returning)} back"
             segments = self.segments
         self.logger.stop()  # outside the lock: the sampler thread calls key_snapshot()
         return segments
+
+    def mark_turnaround(self) -> bool:
+        with self._lock:
+            if not self.recording:
+                self.message = "Start a recording before marking the turnaround."
+                return False
+            if self.turnaround_time is not None:
+                self.message = "Turnaround already marked."
+                return False
+            self.turnaround_time = time.perf_counter()
+            self.message = "Turnaround marked; drive the return leg and stop when back."
+            return True
 
     def abort(self) -> None:
         with self._lock:
@@ -162,6 +212,8 @@ class RouteRecorder:
                 return
             self.recording = False
             self.segments, self.stats = [], {}
+            self.round_trip_segments = None
+            self.turnaround_time = None
             self.message = "Recording discarded; nothing saved."
         self.logger.discard()
 
@@ -204,6 +256,7 @@ class RouteRecorder:
                 keyboard.add_hotkey("f8", self.start, suppress=False),
                 keyboard.add_hotkey("f9", self.stop, suppress=False),
                 keyboard.add_hotkey("f10", self.abort, suppress=False),
+                keyboard.add_hotkey("f11", self.mark_turnaround, suppress=False),
             ]
         except Exception as exc:
             self.message = f"Recorder hotkeys unavailable: {exc}"
@@ -227,12 +280,18 @@ class RouteRecorder:
 
 def update_config(path: str | Path, keys: list[str], value: Any) -> None:
     """Atomically set a nested key in the JSON config."""
+    update_config_many(path, [(keys, value)])
+
+
+def update_config_many(path: str | Path, updates: list[tuple[list[str], Any]]) -> None:
+    """Atomically set multiple nested keys in the JSON config."""
     path = Path(path)
     data = json.loads(path.read_text(encoding="utf-8"))
-    node = data
-    for key in keys[:-1]:
-        node = node.setdefault(key, {})
-    node[keys[-1]] = value
+    for keys, value in updates:
+        node = data
+        for key in keys[:-1]:
+            node = node.setdefault(key, {})
+        node[keys[-1]] = value
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -261,3 +320,22 @@ def assign_route(
         update_config(path, ["routes", map_name, route_name], segments)
     else:
         update_config(path, ["agent", "route_segments", route_name], segments)
+
+
+def assign_round_trip(
+    path: str | Path,
+    first_route: str,
+    outbound_segments: list[dict[str, Any]],
+    return_segments: list[dict[str, Any]],
+    map_name: str | None = None,
+) -> None:
+    if first_route not in ("to_fob", "to_hq"):
+        raise ValueError(f"Unknown route: {first_route}")
+    if not outbound_segments or not return_segments:
+        raise ValueError("Both round-trip legs need recorded segments")
+    second_route = "to_hq" if first_route == "to_fob" else "to_fob"
+    prefix = ["routes", map_name] if map_name else ["agent", "route_segments"]
+    update_config_many(path, [
+        ([*prefix, first_route], outbound_segments),
+        ([*prefix, second_route], return_segments),
+    ])
