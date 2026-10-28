@@ -76,8 +76,11 @@ def get_available_monitors() -> list[dict[str, Any]]:
         import mss
     except ImportError:
         return []
-    with mss.mss() as capture:
-        monitors = capture.monitors[1:]
+    try:
+        with mss.mss() as capture:
+            monitors = capture.monitors[1:]
+    except Exception:
+        return []
     result = []
     for index, mon in enumerate(monitors, start=1):
         primary = mon.get("left", 0) == 0 and mon.get("top", 0) == 0

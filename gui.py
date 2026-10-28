@@ -782,6 +782,8 @@ class ControlPanel(QMainWindow):
         self.monitor_combo.clear()
         for monitor in monitors:
             self.monitor_combo.addItem(monitor["label"], monitor["index"])
+        if not monitors:
+            self.monitor_combo.addItem("No displays available", None)
         position = self.monitor_combo.findData(current)
         if position >= 0:
             self.monitor_combo.setCurrentIndex(position)

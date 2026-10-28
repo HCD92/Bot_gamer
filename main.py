@@ -43,7 +43,9 @@ def main() -> int:
     except OSError as exc:
         panel = ControlPanel(_queue(), _queue(), _queue(), _queue())
         panel.status_label.setText(str(exc))
+        panel.hotkeys_available = False
         panel.start_button.setEnabled(False)
+        panel.batch_button.setEnabled(False)
         panel.show()
         return app.exec()
 
