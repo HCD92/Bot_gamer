@@ -43,7 +43,9 @@ def main() -> int:
     except OSError as exc:
         panel = ControlPanel(_queue(), _queue(), _queue(), _queue())
         panel.status_label.setText(str(exc))
+        panel.hotkeys_available = False
         panel.start_button.setEnabled(False)
+        panel.batch_button.setEnabled(False)
         panel.show()
         return app.exec()
 
@@ -101,6 +103,7 @@ def main() -> int:
         config_path=config_path,
         vision_worker=vision_worker,
         model_callback=activate_model,
+        input_controller=controller,
     )
     panel.recorder.logger.frame_source = training_frame_source
     dataset_cfg = config.get("dataset", {})
@@ -121,9 +124,17 @@ def main() -> int:
 
         hotkey_handles.append(keyboard.add_hotkey("f12", emergency_hotkey, suppress=False))
         hotkey_handles.append(keyboard.add_hotkey("esc", emergency_hotkey, suppress=False))
-        status.put({"kind": "status", "message": "F12 or Esc: emergency stop"})
+        status.put({
+            "kind": "status",
+            "message": "F12 or Esc: emergency stop",
+            "hotkeys_available": True,
+        })
     except Exception as exc:
-        status.put({"kind": "status", "message": f"Global hotkeys unavailable: {exc}"})
+        status.put({
+            "kind": "status",
+            "message": f"Global hotkeys unavailable: {exc}",
+            "hotkeys_available": False,
+        })
 
     capture_worker.start()
     vision_worker.start()

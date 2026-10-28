@@ -83,6 +83,7 @@ class VisionEngine:
         self.last_scores: dict[str, float] = {}
         self._last_ocr = 0.0
         self._last_values: dict[str, int | float | None] = {}
+        self.last_ocr_errors: dict[str, str] = {}
 
     def _load_templates(self) -> None:
         directory = Path(self.config.template_dir)
@@ -156,12 +157,17 @@ class VisionEngine:
         self._last_ocr = now
         values: dict[str, int | float | None] = {}
         if self._tesseract is None:
+            self.last_ocr_errors = {
+                name: "pytesseract unavailable" for name in self.config.ocr_regions
+            }
             self._last_values = values
             return values
+        errors: dict[str, str] = {}
         for value_name, roi_name in self.config.ocr_regions.items():
             image = packet.regions.get(roi_name)
             if image is None:
                 values[value_name] = None
+                errors[value_name] = f"ROI not present: {roi_name}"
                 continue
             try:
                 text = self._tesseract.image_to_string(
@@ -171,12 +177,15 @@ class VisionEngine:
                 match = re.search(r"-?\d+(?:\.\d+)?", text)
                 if match is None:
                     values[value_name] = None
+                    errors[value_name] = "no numeric value recognized"
                 elif "." in match.group():
                     values[value_name] = float(match.group())
                 else:
                     values[value_name] = int(match.group())
-            except Exception:
+            except Exception as exc:
                 values[value_name] = None
+                errors[value_name] = str(exc)
+        self.last_ocr_errors = errors
         self._last_values = values
         return values
 
@@ -260,7 +269,9 @@ class VisionWorker(threading.Thread):
                 _put_latest(
                     self.render_queue,
                     {"image": annotated, "roi_preview": roi_preview, "timestamp": packet.timestamp,
-                     "scores": observation.scores, "detected": sorted(observation.detections)},
+                     "scores": observation.scores, "detected": sorted(observation.detections),
+                     "values": observation.values, "template_names": sorted(self.engine.templates),
+                     "ocr_errors": dict(self.engine.last_ocr_errors)},
                 )
             except Exception as exc:
                 if self.status_queue is not None:
